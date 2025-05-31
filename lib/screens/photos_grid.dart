@@ -250,14 +250,14 @@ class _PhotosGridState extends State<PhotosGrid> {
   Widget _buildMonthGrid(List<ImmichAsset> assets, int columnCount) {
     // Create a grid layout for photos within a month
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.all(0),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: columnCount,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
+          crossAxisSpacing: 0,
+          mainAxisSpacing: 0,
           childAspectRatio: 1.0,
         ),
         itemCount: assets.length,
@@ -278,8 +278,8 @@ class _PhotosGridState extends State<PhotosGrid> {
   Widget _buildUngroupedGrid(int columnCount) {
     return SliverMasonryGrid.count(
       crossAxisCount: columnCount,
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
+      mainAxisSpacing: 0,
+      crossAxisSpacing: 0,
       childCount: _assets.length,
       itemBuilder: (context, index) {
         return PhotoGridItem(
@@ -408,7 +408,7 @@ class _PhotosGridState extends State<PhotosGrid> {
                   ),
                 ),
                 SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  padding: const EdgeInsets.all(4.0),
                   sliver: _groupByMonth && _groupedItems.isNotEmpty
                       ? _buildGroupedGrid(columnCount)
                       : _buildUngroupedGrid(columnCount),

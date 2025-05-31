@@ -608,4 +608,26 @@ class ImmichApiService {
       throw Exception('Error removing assets from album $albumId: $e');
     }
   }
+
+  Future<Map<String, dynamic>> getAssetInfo(String assetId) async {
+    if (!isConfigured) {
+      throw Exception('API not configured. Please set base URL and API key.');
+    }
+
+    final uri = Uri.parse('$_baseUrl/api/assets/$assetId');
+
+    try {
+      final response = await http.get(uri, headers: _headers);
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> responseData = json.decode(response.body);
+        return responseData;
+      } else {
+        throw Exception(
+            'Failed to get asset info from $uri: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      throw Exception('Error fetching asset info from $uri: $e');
+    }
+  }
 }

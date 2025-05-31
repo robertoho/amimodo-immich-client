@@ -8,11 +8,13 @@ import '../widgets/pinch_zoom_grid.dart';
 class AlbumsScreen extends StatefulWidget {
   final ImmichApiService apiService;
   final ValueNotifier<int>? refreshNotifier;
+  final VoidCallback? onOpenSettings;
 
   const AlbumsScreen({
     super.key,
     required this.apiService,
     this.refreshNotifier,
+    this.onOpenSettings,
   });
 
   @override
@@ -107,16 +109,23 @@ class _AlbumsScreenState extends State<AlbumsScreen>
     super.build(context); // Required for AutomaticKeepAliveClientMixin
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Albums'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _isLoading ? null : _refreshAlbums,
             tooltip: 'Refresh albums',
           ),
+          if (widget.onOpenSettings != null)
+            IconButton(
+              icon: const Icon(Icons.settings),
+              onPressed: widget.onOpenSettings,
+              tooltip: 'Settings',
+            ),
         ],
       ),
+      extendBodyBehindAppBar: true,
       body: _buildBody(),
     );
   }
@@ -209,11 +218,16 @@ class _AlbumsScreenState extends State<AlbumsScreen>
             final columnCount =
                 _gridScaleService.getGridColumnCount(constraints.maxWidth);
             return GridView.builder(
-              padding: const EdgeInsets.all(16.0),
+              padding: EdgeInsets.only(
+                left: 4.0,
+                right: 4.0,
+                top: 4.0 + MediaQuery.of(context).padding.top + kToolbarHeight,
+                bottom: 4.0,
+              ),
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: columnCount,
-                crossAxisSpacing: 16,
-                mainAxisSpacing: 16,
+                crossAxisSpacing: 0,
+                mainAxisSpacing: 0,
                 childAspectRatio: 0.8,
               ),
               itemCount: _albums.length,
@@ -221,6 +235,7 @@ class _AlbumsScreenState extends State<AlbumsScreen>
                 return AlbumGridItem(
                   album: _albums[index],
                   apiService: widget.apiService,
+                  onOpenSettings: widget.onOpenSettings,
                 );
               },
             );

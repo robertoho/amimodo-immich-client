@@ -82,25 +82,23 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final List<Widget> screens = [
-      MetadataSearchScreen(apiService: _apiService), // Search is now first
+      MetadataSearchScreen(
+        apiService: _apiService,
+        onOpenSettings: _openSettings,
+      ), // Search is now first
       AlbumsScreen(
         apiService: _apiService,
         refreshNotifier: _albumRefreshNotifier,
+        onOpenSettings: _openSettings,
       ), // Albums is now second
     ];
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_getAppBarTitle()),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _openSettings,
-            tooltip: 'Settings',
-          ),
-        ],
+        backgroundColor: Colors.transparent,
+        elevation: 0,
       ),
+      extendBodyBehindAppBar: true,
       body: IndexedStack(
         index: _selectedIndex,
         children: screens,

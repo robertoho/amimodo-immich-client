@@ -130,16 +130,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Immich Settings'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
       ),
+      extendBodyBehindAppBar: true,
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: EdgeInsets.only(
+          left: 16.0,
+          right: 16.0,
+          top: 16.0 + MediaQuery.of(context).padding.top + kToolbarHeight,
+          bottom: 16.0,
+        ),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              Text(
+                'Immich Settings',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
+              const SizedBox(height: 16),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),

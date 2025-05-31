@@ -13,11 +13,13 @@ import '../utils/date_utils.dart';
 class AlbumDetailScreen extends StatefulWidget {
   final ImmichAlbum album;
   final ImmichApiService apiService;
+  final VoidCallback? onOpenSettings;
 
   const AlbumDetailScreen({
     super.key,
     required this.album,
     required this.apiService,
+    this.onOpenSettings,
   });
 
   @override
@@ -308,8 +310,9 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
           title: _isSelectionMode
               ? Text(
                   '${_selectedAssetIds.length + _dragSelectedAssetIds.length} selected')
-              : Text(widget.album.albumName),
-          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+              : null,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
           leading: _isSelectionMode
               ? IconButton(
                   icon: const Icon(Icons.close),
@@ -368,9 +371,16 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                   tooltip:
                       _groupByMonth ? 'Switch to grid view' : 'Group by month',
                 ),
+              if (widget.onOpenSettings != null)
+                IconButton(
+                  icon: const Icon(Icons.settings),
+                  onPressed: widget.onOpenSettings,
+                  tooltip: 'Settings',
+                ),
             ],
           ],
         ),
+        extendBodyBehindAppBar: true,
         body: _buildBody(),
         bottomNavigationBar: _isSelectionMode &&
                 (_selectedAssetIds.isNotEmpty ||
@@ -518,7 +528,12 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
         // Album info header
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(16.0),
+          padding: EdgeInsets.only(
+            left: 16.0,
+            right: 16.0,
+            top: 16.0 + MediaQuery.of(context).padding.top + kToolbarHeight,
+            bottom: 16.0,
+          ),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surface,
             border: Border(
@@ -613,9 +628,12 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                     final columnCount =
                         _getGridColumnCount(constraints.maxWidth);
                     return CustomScrollView(
+                      physics: _isSelectionMode
+                          ? const NeverScrollableScrollPhysics()
+                          : null,
                       slivers: [
                         SliverPadding(
-                          padding: const EdgeInsets.all(16.0),
+                          padding: const EdgeInsets.all(4.0),
                           sliver: _groupByMonth && _groupedItems.isNotEmpty
                               ? _buildGroupedGrid(columnCount)
                               : _buildUngroupedGrid(columnCount),
@@ -689,14 +707,14 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
   Widget _buildMonthGrid(List<ImmichAsset> assets, int columnCount) {
     // Create a grid layout for photos within a month
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.all(0),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: columnCount,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
+          crossAxisSpacing: 0,
+          mainAxisSpacing: 0,
           childAspectRatio: 1.0,
         ),
         itemCount: assets.length,
@@ -727,8 +745,8 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
   Widget _buildUngroupedGrid(int columnCount) {
     return SliverMasonryGrid.count(
       crossAxisCount: columnCount,
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
+      mainAxisSpacing: 0,
+      crossAxisSpacing: 0,
       childCount: _assets.length,
       itemBuilder: (context, index) {
         final asset = _assets[index];

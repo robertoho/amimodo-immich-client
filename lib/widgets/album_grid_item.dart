@@ -9,11 +9,13 @@ import '../widgets/fallback_network_image.dart';
 class AlbumGridItem extends StatefulWidget {
   final ImmichAlbum album;
   final ImmichApiService apiService;
+  final VoidCallback? onOpenSettings;
 
   const AlbumGridItem({
     super.key,
     required this.album,
     required this.apiService,
+    this.onOpenSettings,
   });
 
   @override
@@ -60,6 +62,7 @@ class _AlbumGridItemState extends State<AlbumGridItem> {
             builder: (context) => AlbumDetailScreen(
               album: widget.album,
               apiService: widget.apiService,
+              onOpenSettings: widget.onOpenSettings,
             ),
           ),
         );

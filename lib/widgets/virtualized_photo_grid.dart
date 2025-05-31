@@ -79,8 +79,8 @@ class _VirtualizedPhotoGridState extends State<VirtualizedPhotoGrid> {
     // Calculate grid properties
     final screenWidth = MediaQuery.of(context).size.width;
     final columnCount = _gridScaleService.getGridColumnCount(screenWidth);
-    final padding = 16.0 * 2; // Left and right padding
-    final spacing = 12.0;
+    final padding = 4.0 * 2; // Left and right padding
+    final spacing = 0.0;
     final availableWidth =
         screenWidth - padding - ((columnCount - 1) * spacing);
     final itemWidth = availableWidth / columnCount;
@@ -211,11 +211,11 @@ class _VirtualizedPhotoGridState extends State<VirtualizedPhotoGrid> {
                   controller: _scrollController,
                   slivers: [
                     SliverPadding(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: const EdgeInsets.all(4.0),
                       sliver: SliverMasonryGrid.count(
                         crossAxisCount: columnCount,
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 0,
+                        crossAxisSpacing: 0,
                         childCount: _photoService.totalCount,
                         itemBuilder: (context, index) {
                           final asset = _photoService.getAsset(index);
