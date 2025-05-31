@@ -304,6 +304,8 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                             return PhotoGridItem(
                               asset: _assets[index],
                               apiService: widget.apiService,
+                              assetList: _assets,
+                              assetIndex: index,
                             );
                           },
                         ),

@@ -11,6 +11,8 @@ class PhotoGridItem extends StatelessWidget {
   final bool isSelectionMode;
   final bool isSelected;
   final VoidCallback? onSelectionToggle;
+  final List<ImmichAsset>? assetList;
+  final int? assetIndex;
 
   const PhotoGridItem({
     super.key,
@@ -19,6 +21,8 @@ class PhotoGridItem extends StatelessWidget {
     this.isSelectionMode = false,
     this.isSelected = false,
     this.onSelectionToggle,
+    this.assetList,
+    this.assetIndex,
   });
 
   @override
@@ -31,7 +35,8 @@ class PhotoGridItem extends StatelessWidget {
           Navigator.of(context).push(
             MaterialPageRoute(
               builder: (context) => PhotoDetailScreen(
-                asset: asset,
+                assets: assetList ?? [asset],
+                initialIndex: assetIndex ?? 0,
                 apiService: apiService,
               ),
             ),

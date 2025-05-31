@@ -847,6 +847,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                               _selectedAssetIds.contains(_assets[index].id),
                           onSelectionToggle: () =>
                               _toggleAssetSelection(_assets[index].id),
+                          assetList: _assets,
+                          assetIndex: index,
                         );
                       },
                     ),
@@ -1141,41 +1143,65 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         // Don't throw here as the main operation was successful
       }
 
-      // Count successful and failed operations
+      // Analyze results to categorize them
       final successful = results.where((r) => r['success'] == true).length;
-      final failed = results.length - successful;
+      final duplicated = results.where((r) {
+        if (r['success'] == true) {
+          return false;
+        }
+        final error = r['error']?.toString().toLowerCase() ?? '';
+        return error.contains('duplicate') ||
+            error.contains('already') ||
+            error.contains('exists') ||
+            error.contains('conflict') ||
+            error.contains('present') ||
+            error.contains('found');
+      }).length;
+      final failed = results.length - successful - duplicated;
 
       if (mounted) {
-        if (failed == 0) {
+        String message;
+        Color backgroundColor;
+
+        if (successful == results.length) {
           // All successful
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  'Successfully added ${successful} photo${successful == 1 ? '' : 's'} to album'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          message =
+              'Successfully added ${successful} photo${successful == 1 ? '' : 's'} to album';
+          backgroundColor = Colors.green;
         } else if (successful > 0) {
-          // Partial success
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  'Added ${successful} photo${successful == 1 ? '' : 's'} to album, ${failed} failed'),
-              backgroundColor: Colors.orange,
-            ),
-          );
+          // Mixed results
+          List<String> parts = [];
+          if (successful > 0) {
+            parts.add('${successful} added');
+          }
+          if (duplicated > 0) {
+            parts.add('${duplicated} duplicated');
+          }
+          if (failed > 0) {
+            parts.add('${failed} failed');
+          }
+          message = parts.join(', ');
+          backgroundColor = successful > 0 ? Colors.orange : Colors.red;
+        } else if (duplicated > 0 && failed == 0) {
+          // All duplicated
+          message =
+              '${duplicated} photo${duplicated == 1 ? '' : 's'} already in album';
+          backgroundColor = Colors.blue;
         } else {
           // All failed
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to add photos to album'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          message = 'Failed to add photos to album';
+          backgroundColor = Colors.red;
         }
 
-        // Exit selection mode only if at least some succeeded
-        if (successful > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: backgroundColor,
+          ),
+        );
+
+        // Exit selection mode if at least some succeeded or were duplicates
+        if (successful > 0 || duplicated > 0) {
           _exitSelectionMode();
         }
       }

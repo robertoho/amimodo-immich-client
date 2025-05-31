@@ -270,6 +270,8 @@ class _PhotosGridState extends State<PhotosGrid> {
                       return PhotoGridItem(
                         asset: _assets[index],
                         apiService: widget.apiService,
+                        assetList: _assets,
+                        assetIndex: index,
                       );
                     },
                   ),

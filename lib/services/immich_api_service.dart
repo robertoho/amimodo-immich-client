@@ -532,6 +532,16 @@ class ImmichApiService {
               .map((r) => r['error'])
               .toList();
           print('❌ Errors: $errors');
+
+          // Log detailed error analysis for debugging
+          for (final result in results.where((r) => r['success'] != true)) {
+            final error = result['error']?.toString() ?? 'unknown error';
+            final isDuplicate = error.toLowerCase().contains('duplicate') ||
+                error.toLowerCase().contains('already') ||
+                error.toLowerCase().contains('exists');
+            print(
+                '📋 Asset ${result['id'] ?? 'unknown'}: $error (duplicate: $isDuplicate)');
+          }
         }
 
         return results;
