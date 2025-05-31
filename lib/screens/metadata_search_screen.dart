@@ -35,6 +35,10 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   // Track current visible area for memory management
   int _estimatedVisibleStartIndex = 0;
 
+  // Selection functionality
+  bool _isSelectionMode = false;
+  final Set<String> _selectedAssetIds = <String>{};
+
   // Search filters
   bool? _isFavorite;
   bool? _isOffline;
@@ -507,48 +511,90 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Advanced Search'),
+        title: Text(_isSelectionMode
+            ? '${_selectedAssetIds.length} selected'
+            : 'Advanced Search'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.tune),
-            onPressed: _showFilterDialog,
-            tooltip: 'Search filters',
-          ),
-          // Test button to manually trigger loading
-          if (_assets.isNotEmpty && _hasMoreData)
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () {
-                print('🧪 Manual test: triggering _loadMoreAssets');
-                _loadMoreAssets();
-              },
-              tooltip: 'Test load more',
-            ),
-          IconButton(
-            icon: const Icon(Icons.clear),
-            onPressed: _assets.isNotEmpty ? _clearFilters : null,
-            tooltip: 'Clear results',
-          ),
-          IconButton(
-            icon: const Icon(Icons.visibility),
-            onPressed: () {
-              setState(() {
-                _showStatusWidget = !_showStatusWidget;
-              });
-            },
-            tooltip:
-                _showStatusWidget ? 'Hide status widget' : 'Show status widget',
-          ),
-        ],
+        leading: _isSelectionMode
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _exitSelectionMode,
+                tooltip: 'Exit selection',
+              )
+            : null,
+        actions:
+            _isSelectionMode ? _buildSelectionActions() : _buildNormalActions(),
       ),
       body: _buildBody(),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showFilterDialog,
-        tooltip: 'Advanced Search',
-        child: const Icon(Icons.search),
-      ),
+      floatingActionButton: _isSelectionMode
+          ? null
+          : FloatingActionButton(
+              onPressed: _showFilterDialog,
+              tooltip: 'Advanced Search',
+              child: const Icon(Icons.search),
+            ),
     );
+  }
+
+  List<Widget> _buildSelectionActions() {
+    return [
+      if (_selectedAssetIds.isNotEmpty)
+        IconButton(
+          icon: const Icon(Icons.album),
+          onPressed: _showAddToAlbumDialog,
+          tooltip: 'Add to album',
+        ),
+      IconButton(
+        icon: const Icon(Icons.select_all),
+        onPressed: _selectedAssetIds.length == _assets.length
+            ? _clearSelection
+            : _selectAll,
+        tooltip: _selectedAssetIds.length == _assets.length
+            ? 'Clear selection'
+            : 'Select all',
+      ),
+    ];
+  }
+
+  List<Widget> _buildNormalActions() {
+    return [
+      IconButton(
+        icon: const Icon(Icons.tune),
+        onPressed: _showFilterDialog,
+        tooltip: 'Search filters',
+      ),
+      // Test button to manually trigger loading
+      if (_assets.isNotEmpty && _hasMoreData)
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          onPressed: () {
+            print('🧪 Manual test: triggering _loadMoreAssets');
+            _loadMoreAssets();
+          },
+          tooltip: 'Test load more',
+        ),
+      if (_assets.isNotEmpty)
+        IconButton(
+          icon: const Icon(Icons.checklist),
+          onPressed: _enterSelectionMode,
+          tooltip: 'Select photos',
+        ),
+      IconButton(
+        icon: const Icon(Icons.clear),
+        onPressed: _assets.isNotEmpty ? _clearFilters : null,
+        tooltip: 'Clear results',
+      ),
+      IconButton(
+        icon: Icon(_showStatusWidget ? Icons.visibility : Icons.visibility_off),
+        onPressed: () {
+          setState(() {
+            _showStatusWidget = !_showStatusWidget;
+          });
+        },
+        tooltip:
+            _showStatusWidget ? 'Hide status widget' : 'Show status widget',
+      ),
+    ];
   }
 
   Widget _buildBody() {
@@ -796,6 +842,11 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                         return PhotoGridItem(
                           asset: _assets[index],
                           apiService: widget.apiService,
+                          isSelectionMode: _isSelectionMode,
+                          isSelected:
+                              _selectedAssetIds.contains(_assets[index].id),
+                          onSelectionToggle: () =>
+                              _toggleAssetSelection(_assets[index].id),
                         );
                       },
                     ),
@@ -966,6 +1017,178 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         ),
       ],
     );
+  }
+
+  void _enterSelectionMode() {
+    setState(() {
+      _isSelectionMode = true;
+    });
+  }
+
+  void _exitSelectionMode() {
+    setState(() {
+      _isSelectionMode = false;
+      _selectedAssetIds.clear();
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selectedAssetIds.addAll(_assets.map((asset) => asset.id));
+    });
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selectedAssetIds.clear();
+    });
+  }
+
+  void _toggleAssetSelection(String assetId) {
+    setState(() {
+      if (_selectedAssetIds.contains(assetId)) {
+        _selectedAssetIds.remove(assetId);
+      } else {
+        _selectedAssetIds.add(assetId);
+      }
+    });
+  }
+
+  Future<void> _showAddToAlbumDialog() async {
+    if (_selectedAssetIds.isEmpty) return;
+
+    try {
+      // Get available albums (fresh data)
+      final albums = await widget.apiService.getAllAlbums();
+
+      if (!mounted) return;
+
+      showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text('Add ${_selectedAssetIds.length} photos to album'),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 300,
+              child: albums.isEmpty
+                  ? const Center(child: Text('No albums available'))
+                  : ListView.builder(
+                      key: ValueKey(
+                          'albums_${albums.length}_${albums.map((a) => a.assetCount).join('_')}'),
+                      itemCount: albums.length,
+                      itemBuilder: (context, index) {
+                        final album = albums[index];
+                        return ListTile(
+                          leading: const Icon(Icons.photo_album),
+                          title: Text(album.albumName),
+                          subtitle: Text(
+                              '${album.assetCount} photo${album.assetCount == 1 ? '' : 's'}'),
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            _addSelectedAssetsToAlbum(album.id);
+                          },
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading albums: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _addSelectedAssetsToAlbum(String albumId) async {
+    if (_selectedAssetIds.isEmpty) return;
+
+    try {
+      // Show loading indicator
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('Adding ${_selectedAssetIds.length} photos to album...'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Call the API to add assets to album
+      final results = await widget.apiService
+          .addAssetsToAlbum(albumId, _selectedAssetIds.toList());
+
+      // Immediately refresh album information to update cache BEFORE showing success
+      try {
+        await widget.apiService.getAllAlbums();
+        print('✅ Album cache refreshed immediately after adding assets');
+      } catch (e) {
+        print('⚠️ Failed to refresh album cache: $e');
+        // Don't throw here as the main operation was successful
+      }
+
+      // Count successful and failed operations
+      final successful = results.where((r) => r['success'] == true).length;
+      final failed = results.length - successful;
+
+      if (mounted) {
+        if (failed == 0) {
+          // All successful
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  'Successfully added ${successful} photo${successful == 1 ? '' : 's'} to album'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else if (successful > 0) {
+          // Partial success
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  'Added ${successful} photo${successful == 1 ? '' : 's'} to album, ${failed} failed'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        } else {
+          // All failed
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to add photos to album'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+
+        // Exit selection mode only if at least some succeeded
+        if (successful > 0) {
+          _exitSelectionMode();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error adding photos to album: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 }
 

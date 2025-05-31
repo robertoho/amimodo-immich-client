@@ -7,8 +7,13 @@ import '../widgets/pinch_zoom_grid.dart';
 
 class AlbumsScreen extends StatefulWidget {
   final ImmichApiService apiService;
+  final ValueNotifier<int>? refreshNotifier;
 
-  const AlbumsScreen({super.key, required this.apiService});
+  const AlbumsScreen({
+    super.key,
+    required this.apiService,
+    this.refreshNotifier,
+  });
 
   @override
   State<AlbumsScreen> createState() => _AlbumsScreenState();
@@ -28,6 +33,10 @@ class _AlbumsScreenState extends State<AlbumsScreen>
   @override
   void initState() {
     super.initState();
+
+    // Listen to refresh notifier
+    widget.refreshNotifier?.addListener(_onRefreshRequested);
+
     // Delay loading to ensure API service is ready
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadAlbums();
@@ -37,6 +46,7 @@ class _AlbumsScreenState extends State<AlbumsScreen>
 
   @override
   void dispose() {
+    widget.refreshNotifier?.removeListener(_onRefreshRequested);
     _gridScaleService.removeListener(_onGridScaleChanged);
     super.dispose();
   }
@@ -45,6 +55,16 @@ class _AlbumsScreenState extends State<AlbumsScreen>
     if (mounted) {
       setState(() {});
     }
+  }
+
+  void _onRefreshRequested() {
+    print('🔄 Albums refresh requested via notifier');
+    _loadAlbums();
+  }
+
+  /// Public method to refresh albums - can be called from parent widgets
+  Future<void> refreshAlbums() async {
+    await _loadAlbums();
   }
 
   Future<void> _loadAlbums() async {
@@ -68,6 +88,7 @@ class _AlbumsScreenState extends State<AlbumsScreen>
         _albums = albums;
         _isLoading = false;
       });
+      print('✅ Albums refreshed: ${albums.length} albums loaded');
     } catch (e) {
       setState(() {
         _isLoading = false;

@@ -8,25 +8,35 @@ import 'fallback_network_image.dart';
 class PhotoGridItem extends StatelessWidget {
   final ImmichAsset asset;
   final ImmichApiService apiService;
+  final bool isSelectionMode;
+  final bool isSelected;
+  final VoidCallback? onSelectionToggle;
 
   const PhotoGridItem({
     super.key,
     required this.asset,
     required this.apiService,
+    this.isSelectionMode = false,
+    this.isSelected = false,
+    this.onSelectionToggle,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => PhotoDetailScreen(
-              asset: asset,
-              apiService: apiService,
+        if (isSelectionMode) {
+          onSelectionToggle?.call();
+        } else {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => PhotoDetailScreen(
+                asset: asset,
+                apiService: apiService,
+              ),
             ),
-          ),
-        );
+          );
+        }
       },
       child: Card(
         elevation: 2,
@@ -42,6 +52,13 @@ class PhotoGridItem extends StatelessWidget {
                   fallbackUrl: apiService.getThumbnailUrlFallback(asset.id),
                   headers: apiService.authHeaders,
                 ),
+                // Selection overlay
+                if (isSelectionMode)
+                  Container(
+                    color: isSelected
+                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                        : Colors.black.withOpacity(0.1),
+                  ),
                 // Video indicator
                 if (asset.type.toUpperCase() == 'VIDEO')
                   Positioned(
@@ -76,6 +93,37 @@ class PhotoGridItem extends StatelessWidget {
                         color: Colors.red,
                         size: 16,
                       ),
+                    ),
+                  ),
+                // Selection indicator
+                if (isSelectionMode)
+                  Positioned(
+                    top: 8,
+                    right: isSelected
+                        ? 8
+                        : (asset.type.toUpperCase() == 'VIDEO' ? 32 : 8),
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isSelected
+                            ? Theme.of(context).colorScheme.primary
+                            : Colors.white.withOpacity(0.8),
+                        border: Border.all(
+                          color: isSelected
+                              ? Theme.of(context).colorScheme.primary
+                              : Colors.grey,
+                          width: 2,
+                        ),
+                      ),
+                      child: isSelected
+                          ? const Icon(
+                              Icons.check,
+                              color: Colors.white,
+                              size: 16,
+                            )
+                          : null,
                     ),
                   ),
                 // Date overlay

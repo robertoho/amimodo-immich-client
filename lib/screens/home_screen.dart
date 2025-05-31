@@ -15,6 +15,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final ImmichApiService _apiService = ImmichApiService();
   final GridScaleService _gridScaleService = GridScaleService();
+  final ValueNotifier<int> _albumRefreshNotifier = ValueNotifier<int>(0);
   int _selectedIndex = 0;
   bool _albumsTabVisited = false;
 
@@ -28,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _gridScaleService.removeListener(_onGridScaleChanged);
+    _albumRefreshNotifier.dispose();
     super.dispose();
   }
 
@@ -60,9 +62,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onItemTapped(int index) {
+    final previousIndex = _selectedIndex;
     setState(() {
       _selectedIndex = index;
     });
+
+    // Refresh albums when Albums tab is selected (index 1)
+    if (index == 1 && previousIndex != 1) {
+      print('🔄 Albums tab selected, triggering refresh');
+      _albumRefreshNotifier.value++;
+    }
 
     // Mark albums tab as visited when selected (now at index 1)
     if (index == 1) {
@@ -74,7 +83,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final List<Widget> screens = [
       MetadataSearchScreen(apiService: _apiService), // Search is now first
-      AlbumsScreen(apiService: _apiService), // Albums is now second
+      AlbumsScreen(
+        apiService: _apiService,
+        refreshNotifier: _albumRefreshNotifier,
+      ), // Albums is now second
     ];
 
     return Scaffold(

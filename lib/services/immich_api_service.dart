@@ -495,4 +495,52 @@ class ImmichApiService {
     final List<dynamic> jsonList = assets?['items'] ?? [];
     return jsonList.map((json) => ImmichAsset.fromJson(json)).toList();
   }
+
+  Future<List<Map<String, dynamic>>> addAssetsToAlbum(
+      String albumId, List<String> assetIds) async {
+    if (!isConfigured) {
+      throw Exception('API not configured. Please set base URL and API key.');
+    }
+
+    final uri = Uri.parse('$_baseUrl/api/albums/$albumId/assets');
+
+    try {
+      final requestBody = {
+        'ids': assetIds,
+      };
+
+      print('📝 Adding ${assetIds.length} assets to album $albumId');
+
+      final response = await http.put(
+        uri,
+        headers: _headers,
+        body: json.encode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final List<dynamic> responseData = json.decode(response.body);
+        final results = responseData.cast<Map<String, dynamic>>();
+
+        // Log results for debugging
+        final successful = results.where((r) => r['success'] == true).length;
+        final failed = results.length - successful;
+        print('✅ Album operation: $successful successful, $failed failed');
+
+        if (failed > 0) {
+          final errors = results
+              .where((r) => r['success'] != true)
+              .map((r) => r['error'])
+              .toList();
+          print('❌ Errors: $errors');
+        }
+
+        return results;
+      } else {
+        throw Exception(
+            'Failed to add assets to album $albumId: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      throw Exception('Error adding assets to album $albumId: $e');
+    }
+  }
 }
