@@ -41,6 +41,19 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   bool _isSelectionMode = false;
   final Set<String> _selectedAssetIds = <String>{};
 
+  // Drag selection state
+  bool _isDragSelecting = false;
+  Offset? _dragStart;
+  Set<String> _dragSelectedAssetIds = {};
+  Set<String> _originalSelectedAssetIds = {};
+
+  // Grid item positions for drag selection
+  final Map<String, GlobalKey> _itemKeys = {};
+  final GlobalKey _gridKey = GlobalKey();
+
+  // Path-based selection state
+  String? _lastSelectedAssetId;
+
   // Photo grouping
   bool _groupByMonth =
       true; // Re-enable grouping by default with safe implementation
@@ -76,6 +89,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   void dispose() {
     _scrollController.dispose();
     _gridScaleService.removeListener(_onGridScaleChanged);
+    _clearAllItemKeys(); // Clear all GlobalKeys when disposing
     super.dispose();
   }
 
@@ -170,6 +184,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
           // This is approximate since we're dealing with a sliding window
           _currentPage =
               ((keepEndIndex / _assetsPerPage).ceil()).clamp(1, _currentPage);
+
+          // Cleanup GlobalKeys for removed assets
+          _cleanupRemovedAssetKeys();
         });
       } catch (e) {
         print('❌ Error during memory cleanup: $e');
@@ -192,6 +209,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _isLoading = true;
       _hasError = false;
       _assets.clear();
+      _clearAllItemKeys(); // Clear GlobalKeys when clearing assets
       _currentPage = 1;
     });
 
@@ -244,6 +262,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         } else {
           _groupedItems = [];
         }
+
+        // Cleanup old GlobalKeys after setting new assets
+        _cleanupRemovedAssetKeys();
       });
     } catch (e) {
       setState(() {
@@ -340,6 +361,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         } else {
           _groupedItems = [];
         }
+
+        // Cleanup old GlobalKeys after adding new assets
+        _cleanupRemovedAssetKeys();
       });
 
       print(
@@ -376,6 +400,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _sortOrder = 'desc';
       _assets.clear();
       _groupedItems.clear();
+      _clearAllItemKeys(); // Clear GlobalKeys when clearing assets
     });
     // Perform search with cleared filters
     _searchAssets();
@@ -536,7 +561,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_isSelectionMode
-            ? '${_selectedAssetIds.length} selected'
+            ? '${_selectedAssetIds.length + _dragSelectedAssetIds.length} selected'
             : 'Advanced Search'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         leading: _isSelectionMode
@@ -561,8 +586,10 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   }
 
   List<Widget> _buildSelectionActions() {
+    final totalSelected =
+        _selectedAssetIds.length + _dragSelectedAssetIds.length;
     return [
-      if (_selectedAssetIds.isNotEmpty)
+      if (totalSelected > 0)
         IconButton(
           icon: const Icon(Icons.album),
           onPressed: _showAddToAlbumDialog,
@@ -570,12 +597,10 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         ),
       IconButton(
         icon: const Icon(Icons.select_all),
-        onPressed: _selectedAssetIds.length == _assets.length
-            ? _clearSelection
-            : _selectAll,
-        tooltip: _selectedAssetIds.length == _assets.length
-            ? 'Clear selection'
-            : 'Select all',
+        onPressed:
+            totalSelected == _assets.length ? _clearSelection : _selectAll,
+        tooltip:
+            totalSelected == _assets.length ? 'Clear selection' : 'Select all',
       ),
     ];
   }
@@ -747,71 +772,146 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     return RefreshIndicator(
       onRefresh: _searchAssets,
       child: PinchZoomGrid(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final columnCount = _getGridColumnCount(constraints.maxWidth);
-            return CustomScrollView(
-              controller: _scrollController,
-              slivers: [
-                if (_assets.isNotEmpty) ...[
-                  SliverPadding(
-                    padding: const EdgeInsets.all(16.0),
-                    sliver: SliverToBoxAdapter(
-                      child: Text(
-                        'Found ${_assets.length} asset${_assets.length == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ),
-                  ),
-                  // Sticky status widget showing pagination and memory info
-                  if (_showStatusWidget)
-                    SliverPersistentHeader(
-                      pinned: true,
-                      delegate: _StatusWidgetDelegate(
-                        height: _isLoading
-                            ? 140.0
-                            : 120.0, // Dynamic height based on loading state
-                        child: Container(
-                          color: Theme.of(context).scaffoldBackgroundColor,
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(
-                                horizontal: 16.0, vertical: 8.0),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.surface,
-                              borderRadius: BorderRadius.circular(8),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Theme.of(context)
-                                      .shadowColor
-                                      .withOpacity(0.1),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
+        child: _isSelectionMode
+            ? _buildDragSelectionWrapper(
+                child: LayoutBuilder(
+                  key: _gridKey,
+                  builder: (context, constraints) {
+                    final columnCount =
+                        _getGridColumnCount(constraints.maxWidth);
+                    return CustomScrollView(
+                      controller: _scrollController,
+                      slivers: [
+                        if (_assets.isNotEmpty) ...[
+                          SliverPadding(
+                            padding: const EdgeInsets.all(16.0),
+                            sliver: SliverToBoxAdapter(
+                              child: Text(
+                                'Found ${_assets.length} asset${_assets.length == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
                             ),
-                            child: _buildStatusWidget(),
+                          ),
+                          // Sticky status widget showing pagination and memory info
+                          if (_showStatusWidget)
+                            SliverPersistentHeader(
+                              pinned: true,
+                              delegate: _StatusWidgetDelegate(
+                                height: _isLoading
+                                    ? 140.0
+                                    : 120.0, // Dynamic height based on loading state
+                                child: Container(
+                                  color:
+                                      Theme.of(context).scaffoldBackgroundColor,
+                                  child: Container(
+                                    margin: const EdgeInsets.symmetric(
+                                        horizontal: 16.0, vertical: 8.0),
+                                    decoration: BoxDecoration(
+                                      color:
+                                          Theme.of(context).colorScheme.surface,
+                                      borderRadius: BorderRadius.circular(8),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Theme.of(context)
+                                              .shadowColor
+                                              .withOpacity(0.1),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                    child: _buildStatusWidget(),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          SliverPadding(
+                            padding: const EdgeInsets.all(0),
+                            sliver: _groupByMonth && _groupedItems.isNotEmpty
+                                ? _buildGroupedGrid(columnCount)
+                                : _buildUngroupedGrid(columnCount),
+                          ),
+                        ],
+                        if (_isLoading && _assets.isEmpty)
+                          const SliverToBoxAdapter(
+                            child: Padding(
+                              padding: EdgeInsets.all(16.0),
+                              child: Center(child: CircularProgressIndicator()),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              )
+            : LayoutBuilder(
+                key: _gridKey,
+                builder: (context, constraints) {
+                  final columnCount = _getGridColumnCount(constraints.maxWidth);
+                  return CustomScrollView(
+                    controller: _scrollController,
+                    slivers: [
+                      if (_assets.isNotEmpty) ...[
+                        SliverPadding(
+                          padding: const EdgeInsets.all(16.0),
+                          sliver: SliverToBoxAdapter(
+                            child: Text(
+                              'Found ${_assets.length} asset${_assets.length == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                    sliver: _groupByMonth && _groupedItems.isNotEmpty
-                        ? _buildGroupedGrid(columnCount)
-                        : _buildUngroupedGrid(columnCount),
-                  ),
-                ],
-                if (_isLoading && _assets.isEmpty)
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Center(child: CircularProgressIndicator()),
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
+                        // Sticky status widget showing pagination and memory info
+                        if (_showStatusWidget)
+                          SliverPersistentHeader(
+                            pinned: true,
+                            delegate: _StatusWidgetDelegate(
+                              height: _isLoading
+                                  ? 140.0
+                                  : 120.0, // Dynamic height based on loading state
+                              child: Container(
+                                color:
+                                    Theme.of(context).scaffoldBackgroundColor,
+                                child: Container(
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 16.0, vertical: 8.0),
+                                  decoration: BoxDecoration(
+                                    color:
+                                        Theme.of(context).colorScheme.surface,
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Theme.of(context)
+                                            .shadowColor
+                                            .withOpacity(0.1),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: _buildStatusWidget(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        SliverPadding(
+                          padding: const EdgeInsets.all(0),
+                          sliver: _groupByMonth && _groupedItems.isNotEmpty
+                              ? _buildGroupedGrid(columnCount)
+                              : _buildUngroupedGrid(columnCount),
+                        ),
+                      ],
+                      if (_isLoading && _assets.isEmpty)
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: Center(child: CircularProgressIndicator()),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
       ),
     );
   }
@@ -971,6 +1071,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   void _enterSelectionMode() {
     setState(() {
       _isSelectionMode = true;
+      // Clear GlobalKeys when entering selection mode to prevent conflicts
+      _clearAllItemKeys();
     });
   }
 
@@ -978,6 +1080,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     setState(() {
       _isSelectionMode = false;
       _selectedAssetIds.clear();
+      _clearDragSelection();
+      // Clear GlobalKeys when exiting selection mode to prevent conflicts
+      _clearAllItemKeys();
     });
   }
 
@@ -990,10 +1095,16 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   void _clearSelection() {
     setState(() {
       _selectedAssetIds.clear();
+      _clearDragSelection();
     });
   }
 
   void _toggleAssetSelection(String assetId) {
+    // Don't trigger a full rebuild if we're in drag selection mode
+    if (_isDragSelecting) {
+      return;
+    }
+
     setState(() {
       if (_selectedAssetIds.contains(assetId)) {
         _selectedAssetIds.remove(assetId);
@@ -1003,8 +1114,146 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     });
   }
 
+  void _clearDragSelection() {
+    _isDragSelecting = false;
+    _dragStart = null;
+    _dragSelectedAssetIds.clear();
+    _originalSelectedAssetIds.clear();
+    _lastSelectedAssetId = null;
+  }
+
+  void _startDragSelection(Offset position) {
+    if (!_isSelectionMode) return;
+
+    setState(() {
+      _isDragSelecting = false; // Don't start immediately
+      _dragStart = position;
+      _originalSelectedAssetIds = Set.from(_selectedAssetIds);
+      _dragSelectedAssetIds.clear();
+      _lastSelectedAssetId = null;
+    });
+  }
+
+  void _updateDragSelection(Offset position) {
+    if (_dragStart == null) return;
+
+    // Only start drag selection if the user has moved far enough
+    const double minDragDistance = 10.0;
+    final distance = (position - _dragStart!).distance;
+
+    if (!_isDragSelecting && distance > minDragDistance) {
+      setState(() {
+        _isDragSelecting = true;
+      });
+    }
+
+    if (_isDragSelecting) {
+      setState(() {
+        _selectAssetAtPosition(position);
+      });
+    }
+  }
+
+  void _selectAssetAtPosition(Offset position) {
+    // Find the asset at the current position
+    String? assetAtPosition = _getAssetAtPosition(position);
+
+    if (assetAtPosition != null) {
+      // If we have a last selected asset and it's different from current,
+      // fill the gap between them
+      if (_lastSelectedAssetId != null &&
+          _lastSelectedAssetId != assetAtPosition) {
+        _selectLinearPath(_lastSelectedAssetId!, assetAtPosition);
+      }
+
+      // Always select the current asset
+      _dragSelectedAssetIds.add(assetAtPosition);
+      _lastSelectedAssetId = assetAtPosition;
+    }
+  }
+
+  String? _getAssetAtPosition(Offset position) {
+    // Check each asset to see if the position is within its bounds
+    for (final asset in _assets) {
+      final itemKey = _itemKeys[asset.id];
+      if (itemKey?.currentContext != null) {
+        final RenderBox? renderBox =
+            itemKey!.currentContext!.findRenderObject() as RenderBox?;
+        if (renderBox != null) {
+          final RenderBox? gridRenderBox =
+              _gridKey.currentContext?.findRenderObject() as RenderBox?;
+          if (gridRenderBox != null) {
+            // Get the position of the item relative to the grid
+            final itemPosition =
+                renderBox.localToGlobal(Offset.zero, ancestor: gridRenderBox);
+            final itemSize = renderBox.size;
+            final itemRect = Rect.fromLTWH(
+              itemPosition.dx,
+              itemPosition.dy,
+              itemSize.width,
+              itemSize.height,
+            );
+
+            // Check if the position is within this item
+            if (itemRect.contains(position)) {
+              return asset.id;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  void _selectLinearPath(String fromAssetId, String toAssetId) {
+    // Find the indices of both assets in the current assets list
+    int fromIndex = _assets.indexWhere((asset) => asset.id == fromAssetId);
+    int toIndex = _assets.indexWhere((asset) => asset.id == toAssetId);
+
+    if (fromIndex == -1 || toIndex == -1) return;
+
+    // Ensure we go from smaller to larger index
+    int startIndex = fromIndex < toIndex ? fromIndex : toIndex;
+    int endIndex = fromIndex < toIndex ? toIndex : fromIndex;
+
+    // Select all assets between (and including) the start and end indices
+    for (int i = startIndex; i <= endIndex; i++) {
+      _dragSelectedAssetIds.add(_assets[i].id);
+    }
+  }
+
+  void _endDragSelection() {
+    if (!_isDragSelecting) return;
+
+    setState(() {
+      // Finalize the selection by combining original and drag selected
+      _selectedAssetIds.clear();
+      _selectedAssetIds.addAll(_originalSelectedAssetIds);
+      _selectedAssetIds.addAll(_dragSelectedAssetIds);
+      _clearDragSelection();
+    });
+  }
+
+  GlobalKey _getItemKey(String assetId) {
+    return _itemKeys.putIfAbsent(assetId, () => GlobalKey());
+  }
+
+  void _cleanupRemovedAssetKeys() {
+    // Get current asset IDs
+    final currentAssetIds = _assets.map((asset) => asset.id).toSet();
+
+    // Remove keys for assets that are no longer in the list
+    _itemKeys.removeWhere((assetId, key) => !currentAssetIds.contains(assetId));
+  }
+
+  void _clearAllItemKeys() {
+    _itemKeys.clear();
+  }
+
   Future<void> _showAddToAlbumDialog() async {
-    if (_selectedAssetIds.isEmpty) return;
+    final totalSelected =
+        _selectedAssetIds.length + _dragSelectedAssetIds.length;
+    if (totalSelected == 0) return;
 
     try {
       // Get available albums (fresh data)
@@ -1016,7 +1265,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         context: context,
         builder: (BuildContext context) {
           return AlertDialog(
-            title: Text('Add ${_selectedAssetIds.length} photos to album'),
+            title: Text('Add $totalSelected photos to album'),
             content: SizedBox(
               width: double.maxFinite,
               height: 300,
@@ -1063,15 +1312,20 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   }
 
   Future<void> _addSelectedAssetsToAlbum(String albumId) async {
-    if (_selectedAssetIds.isEmpty) return;
+    // Combine regular selected and drag selected assets
+    final allSelectedIds = <String>{
+      ..._selectedAssetIds,
+      ..._dragSelectedAssetIds,
+    };
+
+    if (allSelectedIds.isEmpty) return;
 
     try {
       // Show loading indicator
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
-                Text('Adding ${_selectedAssetIds.length} photos to album...'),
+            content: Text('Adding ${allSelectedIds.length} photos to album...'),
             duration: const Duration(seconds: 2),
           ),
         );
@@ -1079,7 +1333,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
       // Call the API to add assets to album
       final results = await widget.apiService
-          .addAssetsToAlbum(albumId, _selectedAssetIds.toList());
+          .addAssetsToAlbum(albumId, allSelectedIds.toList());
 
       // Immediately refresh album information to update cache BEFORE showing success
       try {
@@ -1176,6 +1430,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         // Clear grouped items for ungrouped view
         _groupedItems = [];
       }
+
+      // Cleanup GlobalKeys when changing grouping mode as widget structure changes
+      _cleanupRemovedAssetKeys();
     });
   }
 
@@ -1232,29 +1489,39 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   Widget _buildMonthGrid(List<ImmichAsset> assets, int columnCount) {
     // Create a grid layout for photos within a month
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.all(0), // Remove margin for seamless layout
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: columnCount,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
+          crossAxisSpacing: 0, // Remove gaps between tiles
+          mainAxisSpacing: 0, // Remove gaps between tiles
           childAspectRatio: 1.0,
         ),
         itemCount: assets.length,
         itemBuilder: (context, index) {
           final asset = assets[index];
           final globalIndex = _assets.indexOf(asset);
-          return PhotoGridItem(
+          final isSelected = _isAssetSelected(asset.id);
+
+          final photoGridItem = PhotoGridItem(
+            key: ValueKey('grid_item_${asset.id}'),
             asset: asset,
             apiService: widget.apiService,
             isSelectionMode: _isSelectionMode,
-            isSelected: _selectedAssetIds.contains(asset.id),
+            isSelected: isSelected,
             onSelectionToggle: () => _toggleAssetSelection(asset.id),
             assetList: _assets,
             assetIndex: globalIndex >= 0 ? globalIndex : 0,
           );
+
+          return _isSelectionMode
+              ? Container(
+                  key: _getItemKey(asset.id),
+                  child: photoGridItem,
+                )
+              : photoGridItem;
         },
       ),
     );
@@ -1263,8 +1530,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   Widget _buildUngroupedGrid(int columnCount) {
     return SliverMasonryGrid.count(
       crossAxisCount: columnCount,
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
+      mainAxisSpacing: 0,
+      crossAxisSpacing: 0,
       childCount: _assets.length +
           (_isLoading && _hasMoreData && _assets.isNotEmpty ? 1 : 0),
       itemBuilder: (context, index) {
@@ -1321,17 +1588,55 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         }
 
         // Show regular photo grid item
-        return PhotoGridItem(
-          asset: _assets[index],
+        final asset = _assets[index];
+        final isSelected = _isAssetSelected(asset.id);
+
+        final photoGridItem = PhotoGridItem(
+          key: ValueKey('grid_item_${asset.id}'),
+          asset: asset,
           apiService: widget.apiService,
           isSelectionMode: _isSelectionMode,
-          isSelected: _selectedAssetIds.contains(_assets[index].id),
-          onSelectionToggle: () => _toggleAssetSelection(_assets[index].id),
+          isSelected: isSelected,
+          onSelectionToggle: () => _toggleAssetSelection(asset.id),
           assetList: _assets,
           assetIndex: index,
         );
+
+        return _isSelectionMode
+            ? Container(
+                key: _getItemKey(asset.id),
+                child: photoGridItem,
+              )
+            : photoGridItem;
       },
     );
+  }
+
+  Widget _buildDragSelectionWrapper({required Widget child}) {
+    return GestureDetector(
+      onPanStart: _isSelectionMode
+          ? (details) {
+              _startDragSelection(details.localPosition);
+            }
+          : null,
+      onPanUpdate: _isSelectionMode
+          ? (details) {
+              _updateDragSelection(details.localPosition);
+            }
+          : null,
+      onPanEnd: _isSelectionMode
+          ? (details) {
+              _endDragSelection();
+            }
+          : null,
+      child: child,
+    );
+  }
+
+  bool _isAssetSelected(String assetId) {
+    return _selectedAssetIds.contains(assetId) ||
+        _originalSelectedAssetIds.contains(assetId) ||
+        _dragSelectedAssetIds.contains(assetId);
   }
 }
 
