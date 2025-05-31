@@ -7,6 +7,8 @@ import '../services/immich_api_service.dart';
 import '../services/grid_scale_service.dart';
 import '../widgets/photo_grid_item.dart';
 import '../widgets/pinch_zoom_grid.dart';
+import '../widgets/section_header.dart';
+import '../utils/date_utils.dart';
 
 class AlbumDetailScreen extends StatefulWidget {
   final ImmichAlbum album;
@@ -28,6 +30,11 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
   bool _isLoading = true;
   bool _hasError = false;
   String _errorMessage = '';
+
+  // Photo grouping
+  bool _groupByMonth =
+      true; // Re-enable grouping by default with safe implementation
+  List<GroupedGridItem> _groupedItems = [];
 
   @override
   void initState() {
@@ -68,6 +75,14 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       setState(() {
         _assets = assets;
         _isLoading = false;
+
+        // Generate grouped items if grouping is enabled
+        if (_groupByMonth && assets.isNotEmpty) {
+          final groupedAssets = PhotoDateUtils.groupAssetsByMonth(assets);
+          _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
+        } else {
+          _groupedItems = [];
+        }
       });
     } catch (e) {
       setState(() {
@@ -82,8 +97,118 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
     await _loadAlbumAssets();
   }
 
+  void _toggleGrouping() {
+    setState(() {
+      _groupByMonth = !_groupByMonth;
+
+      if (_groupByMonth && _assets.isNotEmpty) {
+        // Generate grouped items
+        final groupedAssets = PhotoDateUtils.groupAssetsByMonth(_assets);
+        _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
+      } else {
+        // Clear grouped items for ungrouped view
+        _groupedItems = [];
+      }
+    });
+  }
+
   int _getGridColumnCount(double width) {
     return _gridScaleService.getGridColumnCount(width);
+  }
+
+  Widget _buildGroupedGrid(int columnCount) {
+    if (_groupedItems.isEmpty) {
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
+
+    // Group consecutive assets by month for better rendering
+    List<Widget> groupedWidgets = [];
+    List<ImmichAsset> currentMonthAssets = [];
+    String? currentMonthTitle;
+
+    for (int i = 0; i < _groupedItems.length; i++) {
+      final item = _groupedItems[i];
+
+      if (item.type == GroupedGridItemType.header) {
+        // Add previous month's assets as a grid if any
+        if (currentMonthAssets.isNotEmpty && currentMonthTitle != null) {
+          groupedWidgets.add(_buildMonthGrid(currentMonthAssets, columnCount));
+        }
+
+        // Add section header
+        groupedWidgets.add(SectionHeader(
+          title: item.displayText!,
+          assetCount: item.assetCount!,
+        ));
+
+        // Reset for new month
+        currentMonthAssets = [];
+        currentMonthTitle = item.displayText;
+      } else {
+        // Collect assets for current month
+        if (item.asset != null) {
+          currentMonthAssets.add(item.asset!);
+        }
+      }
+    }
+
+    // Add the last month's assets
+    if (currentMonthAssets.isNotEmpty) {
+      groupedWidgets.add(_buildMonthGrid(currentMonthAssets, columnCount));
+    }
+
+    // Return as a SliverList with proper widgets
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, index) => groupedWidgets[index],
+        childCount: groupedWidgets.length,
+      ),
+    );
+  }
+
+  Widget _buildMonthGrid(List<ImmichAsset> assets, int columnCount) {
+    // Create a grid layout for photos within a month
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columnCount,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+          childAspectRatio: 1.0,
+        ),
+        itemCount: assets.length,
+        itemBuilder: (context, index) {
+          final asset = assets[index];
+          final globalIndex = _assets.indexOf(asset);
+          return PhotoGridItem(
+            asset: asset,
+            apiService: widget.apiService,
+            assetList: _assets,
+            assetIndex: globalIndex >= 0 ? globalIndex : 0,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildUngroupedGrid(int columnCount) {
+    return SliverMasonryGrid.count(
+      crossAxisCount: columnCount,
+      mainAxisSpacing: 12,
+      crossAxisSpacing: 12,
+      childCount: _assets.length,
+      itemBuilder: (context, index) {
+        return PhotoGridItem(
+          asset: _assets[index],
+          apiService: widget.apiService,
+          assetList: _assets,
+          assetIndex: index,
+        );
+      },
+    );
   }
 
   @override
@@ -108,6 +233,13 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
               onPressed: _isLoading ? null : _refreshAssets,
               tooltip: 'Refresh album',
             ),
+            if (_assets.isNotEmpty)
+              IconButton(
+                icon: Icon(_groupByMonth ? Icons.view_list : Icons.view_module),
+                onPressed: _toggleGrouping,
+                tooltip:
+                    _groupByMonth ? 'Switch to grid view' : 'Group by month',
+              ),
           ],
         ),
         body: _buildBody(),
@@ -295,20 +427,9 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                     slivers: [
                       SliverPadding(
                         padding: const EdgeInsets.all(16.0),
-                        sliver: SliverMasonryGrid.count(
-                          crossAxisCount: columnCount,
-                          mainAxisSpacing: 12,
-                          crossAxisSpacing: 12,
-                          childCount: _assets.length,
-                          itemBuilder: (context, index) {
-                            return PhotoGridItem(
-                              asset: _assets[index],
-                              apiService: widget.apiService,
-                              assetList: _assets,
-                              assetIndex: index,
-                            );
-                          },
-                        ),
+                        sliver: _groupByMonth && _groupedItems.isNotEmpty
+                            ? _buildGroupedGrid(columnCount)
+                            : _buildUngroupedGrid(columnCount),
                       ),
                     ],
                   );

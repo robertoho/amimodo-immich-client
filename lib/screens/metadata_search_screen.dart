@@ -5,6 +5,8 @@ import '../services/immich_api_service.dart';
 import '../services/grid_scale_service.dart';
 import '../widgets/photo_grid_item.dart';
 import '../widgets/pinch_zoom_grid.dart';
+import '../widgets/section_header.dart';
+import '../utils/date_utils.dart';
 
 class MetadataSearchScreen extends StatefulWidget {
   final ImmichApiService apiService;
@@ -38,6 +40,11 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   // Selection functionality
   bool _isSelectionMode = false;
   final Set<String> _selectedAssetIds = <String>{};
+
+  // Photo grouping
+  bool _groupByMonth =
+      true; // Re-enable grouping by default with safe implementation
+  List<GroupedGridItem> _groupedItems = [];
 
   // Search filters
   bool? _isFavorite;
@@ -229,6 +236,14 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         _currentPage = 1;
         _hasMoreData = assets.length == 50;
         _isLoading = false;
+
+        // Generate grouped items if grouping is enabled
+        if (_groupByMonth && assets.isNotEmpty) {
+          final groupedAssets = PhotoDateUtils.groupAssetsByMonth(assets);
+          _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
+        } else {
+          _groupedItems = [];
+        }
       });
     } catch (e) {
       setState(() {
@@ -317,6 +332,14 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         _hasMoreData = pagesLoaded == pagesToPreload &&
             allNewAssets.length == (pagesLoaded * _assetsPerPage);
         _isLoading = false;
+
+        // Regenerate grouped items if grouping is enabled
+        if (_groupByMonth && _assets.isNotEmpty) {
+          final groupedAssets = PhotoDateUtils.groupAssetsByMonth(_assets);
+          _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
+        } else {
+          _groupedItems = [];
+        }
       });
 
       print(
@@ -352,6 +375,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _model = null;
       _sortOrder = 'desc';
       _assets.clear();
+      _groupedItems.clear();
     });
     // Perform search with cleared filters
     _searchAssets();
@@ -563,6 +587,13 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         onPressed: _showFilterDialog,
         tooltip: 'Search filters',
       ),
+      // Grouping toggle
+      if (_assets.isNotEmpty)
+        IconButton(
+          icon: Icon(_groupByMonth ? Icons.view_list : Icons.view_module),
+          onPressed: _toggleGrouping,
+          tooltip: _groupByMonth ? 'Switch to grid view' : 'Group by month',
+        ),
       // Test button to manually trigger loading
       if (_assets.isNotEmpty && _hasMoreData)
         IconButton(
@@ -765,93 +796,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                     ),
                   SliverPadding(
                     padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                    sliver: SliverMasonryGrid.count(
-                      crossAxisCount: columnCount,
-                      mainAxisSpacing: 12,
-                      crossAxisSpacing: 12,
-                      childCount: _assets.length +
-                          (_isLoading && _hasMoreData && _assets.isNotEmpty
-                              ? 1
-                              : 0),
-                      itemBuilder: (context, index) {
-                        // Debug info for loading tile condition
-                        final shouldShowLoadingTile = index == _assets.length &&
-                            _isLoading &&
-                            _hasMoreData;
-                        if (index >= _assets.length - 2) {
-                          // Show debug for last few items
-                          print(
-                              '🐛 Item $index: shouldShow=$shouldShowLoadingTile, isLoading=$_isLoading, hasMore=$_hasMoreData, assetsLength=${_assets.length}');
-                        }
-
-                        // Show loading tile at the end when pagination is loading
-                        if (shouldShowLoadingTile) {
-                          print(
-                              '🎯 Rendering loading tile at index $index (total assets: ${_assets.length})');
-                          return Container(
-                            height: 200,
-                            decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceVariant
-                                  .withOpacity(0.3),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .outline
-                                    .withOpacity(0.2),
-                                width: 1,
-                              ),
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                SizedBox(
-                                  width: 32,
-                                  height: 32,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 3,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      Theme.of(context)
-                                          .colorScheme
-                                          .primary
-                                          .withOpacity(0.7),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  'Loading more...',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurfaceVariant
-                                            .withOpacity(0.7),
-                                      ),
-                                ),
-                              ],
-                            ),
-                          );
-                        }
-
-                        // Show regular photo grid item
-                        return PhotoGridItem(
-                          asset: _assets[index],
-                          apiService: widget.apiService,
-                          isSelectionMode: _isSelectionMode,
-                          isSelected:
-                              _selectedAssetIds.contains(_assets[index].id),
-                          onSelectionToggle: () =>
-                              _toggleAssetSelection(_assets[index].id),
-                          assetList: _assets,
-                          assetIndex: index,
-                        );
-                      },
-                    ),
+                    sliver: _groupByMonth && _groupedItems.isNotEmpty
+                        ? _buildGroupedGrid(columnCount)
+                        : _buildUngroupedGrid(columnCount),
                   ),
                 ],
                 if (_isLoading && _assets.isEmpty)
@@ -1215,6 +1162,176 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         );
       }
     }
+  }
+
+  void _toggleGrouping() {
+    setState(() {
+      _groupByMonth = !_groupByMonth;
+
+      if (_groupByMonth && _assets.isNotEmpty) {
+        // Generate grouped items
+        final groupedAssets = PhotoDateUtils.groupAssetsByMonth(_assets);
+        _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
+      } else {
+        // Clear grouped items for ungrouped view
+        _groupedItems = [];
+      }
+    });
+  }
+
+  Widget _buildGroupedGrid(int columnCount) {
+    if (_groupedItems.isEmpty) {
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
+
+    // Group consecutive assets by month for better rendering
+    List<Widget> groupedWidgets = [];
+    List<ImmichAsset> currentMonthAssets = [];
+    String? currentMonthTitle;
+
+    for (int i = 0; i < _groupedItems.length; i++) {
+      final item = _groupedItems[i];
+
+      if (item.type == GroupedGridItemType.header) {
+        // Add previous month's assets as a grid if any
+        if (currentMonthAssets.isNotEmpty && currentMonthTitle != null) {
+          groupedWidgets.add(_buildMonthGrid(currentMonthAssets, columnCount));
+        }
+
+        // Add section header
+        groupedWidgets.add(SectionHeader(
+          title: item.displayText!,
+          assetCount: item.assetCount!,
+        ));
+
+        // Reset for new month
+        currentMonthAssets = [];
+        currentMonthTitle = item.displayText;
+      } else {
+        // Collect assets for current month
+        if (item.asset != null) {
+          currentMonthAssets.add(item.asset!);
+        }
+      }
+    }
+
+    // Add the last month's assets
+    if (currentMonthAssets.isNotEmpty) {
+      groupedWidgets.add(_buildMonthGrid(currentMonthAssets, columnCount));
+    }
+
+    // Return as a SliverList with proper widgets
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, index) => groupedWidgets[index],
+        childCount: groupedWidgets.length,
+      ),
+    );
+  }
+
+  Widget _buildMonthGrid(List<ImmichAsset> assets, int columnCount) {
+    // Create a grid layout for photos within a month
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columnCount,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+          childAspectRatio: 1.0,
+        ),
+        itemCount: assets.length,
+        itemBuilder: (context, index) {
+          final asset = assets[index];
+          final globalIndex = _assets.indexOf(asset);
+          return PhotoGridItem(
+            asset: asset,
+            apiService: widget.apiService,
+            isSelectionMode: _isSelectionMode,
+            isSelected: _selectedAssetIds.contains(asset.id),
+            onSelectionToggle: () => _toggleAssetSelection(asset.id),
+            assetList: _assets,
+            assetIndex: globalIndex >= 0 ? globalIndex : 0,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildUngroupedGrid(int columnCount) {
+    return SliverMasonryGrid.count(
+      crossAxisCount: columnCount,
+      mainAxisSpacing: 12,
+      crossAxisSpacing: 12,
+      childCount: _assets.length +
+          (_isLoading && _hasMoreData && _assets.isNotEmpty ? 1 : 0),
+      itemBuilder: (context, index) {
+        // Debug info for loading tile condition
+        final shouldShowLoadingTile =
+            index == _assets.length && _isLoading && _hasMoreData;
+        if (index >= _assets.length - 2) {
+          // Show debug for last few items
+          print(
+              '🐛 Item $index: shouldShow=$shouldShowLoadingTile, isLoading=$_isLoading, hasMore=$_hasMoreData, assetsLength=${_assets.length}');
+        }
+
+        // Show loading tile at the end when pagination is loading
+        if (shouldShowLoadingTile) {
+          print(
+              '🎯 Rendering loading tile at index $index (total assets: ${_assets.length})');
+          return Container(
+            height: 200,
+            decoration: BoxDecoration(
+              color:
+                  Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                width: 1,
+              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Theme.of(context).colorScheme.primary.withOpacity(0.7),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Loading more...',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant
+                            .withOpacity(0.7),
+                      ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        // Show regular photo grid item
+        return PhotoGridItem(
+          asset: _assets[index],
+          apiService: widget.apiService,
+          isSelectionMode: _isSelectionMode,
+          isSelected: _selectedAssetIds.contains(_assets[index].id),
+          onSelectionToggle: () => _toggleAssetSelection(_assets[index].id),
+          assetList: _assets,
+          assetIndex: index,
+        );
+      },
+    );
   }
 }
 
