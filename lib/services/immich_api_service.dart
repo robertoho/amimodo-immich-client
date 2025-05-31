@@ -553,4 +553,59 @@ class ImmichApiService {
       throw Exception('Error adding assets to album $albumId: $e');
     }
   }
+
+  Future<List<Map<String, dynamic>>> removeAssetFromAlbum(
+      String albumId, List<String> assetIds) async {
+    if (!isConfigured) {
+      throw Exception('API not configured. Please set base URL and API key.');
+    }
+
+    final uri = Uri.parse('$_baseUrl/api/albums/$albumId/assets');
+
+    try {
+      final requestBody = {
+        'ids': assetIds,
+      };
+
+      print('🗑️ Removing ${assetIds.length} assets from album $albumId');
+
+      final response = await http.delete(
+        uri,
+        headers: _headers,
+        body: json.encode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final List<dynamic> responseData = json.decode(response.body);
+        final results = responseData.cast<Map<String, dynamic>>();
+
+        // Log results for debugging
+        final successful = results.where((r) => r['success'] == true).length;
+        final failed = results.length - successful;
+        print(
+            '✅ Album removal operation: $successful successful, $failed failed');
+
+        if (failed > 0) {
+          final errors = results
+              .where((r) => r['success'] != true)
+              .map((r) => r['error'])
+              .toList();
+          print('❌ Removal errors: $errors');
+
+          // Log detailed error analysis for debugging
+          for (final result in results.where((r) => r['success'] != true)) {
+            final error = result['error']?.toString() ?? 'unknown error';
+            print('📋 Asset ${result['id'] ?? 'unknown'}: $error');
+          }
+        }
+
+        return results;
+      } else {
+        throw Exception(
+            'Failed to remove assets from album $albumId: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      throw Exception('Error removing assets from album $albumId: $e');
+    }
+  }
 }

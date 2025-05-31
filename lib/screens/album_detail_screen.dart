@@ -36,6 +36,11 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       true; // Re-enable grouping by default with safe implementation
   List<GroupedGridItem> _groupedItems = [];
 
+  // Selection mode for removing assets
+  bool _isSelectionMode = false;
+  Set<String> _selectedAssetIds = {};
+  bool _isRemoving = false;
+
   @override
   void initState() {
     super.initState();
@@ -110,6 +115,123 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
         _groupedItems = [];
       }
     });
+  }
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _isSelectionMode = !_isSelectionMode;
+      if (!_isSelectionMode) {
+        _selectedAssetIds.clear();
+      }
+    });
+  }
+
+  void _toggleAssetSelection(String assetId) {
+    setState(() {
+      if (_selectedAssetIds.contains(assetId)) {
+        _selectedAssetIds.remove(assetId);
+      } else {
+        _selectedAssetIds.add(assetId);
+      }
+    });
+  }
+
+  void _selectAllAssets() {
+    setState(() {
+      _selectedAssetIds = _assets.map((asset) => asset.id).toSet();
+    });
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selectedAssetIds.clear();
+    });
+  }
+
+  Future<void> _removeSelectedAssets() async {
+    if (_selectedAssetIds.isEmpty) return;
+
+    final shouldRemove = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove Photos'),
+        content: Text(
+          'Are you sure you want to remove ${_selectedAssetIds.length} photo(s) from this album?\n\nNote: This will only remove them from the album, not delete them permanently.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldRemove != true) return;
+
+    setState(() {
+      _isRemoving = true;
+    });
+
+    try {
+      final results = await widget.apiService.removeAssetFromAlbum(
+        widget.album.id,
+        _selectedAssetIds.toList(),
+      );
+
+      final successful = results.where((r) => r['success'] == true).length;
+      final failed = results.length - successful;
+
+      if (mounted) {
+        // Show result message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              successful > 0
+                  ? failed == 0
+                      ? 'Successfully removed $successful photo(s) from album'
+                      : 'Removed $successful photo(s), $failed failed'
+                  : 'Failed to remove photos from album',
+            ),
+            backgroundColor: successful > 0
+                ? (failed == 0 ? Colors.green : Colors.orange)
+                : Colors.red,
+          ),
+        );
+
+        // Refresh the album to reflect changes
+        await _loadAlbumAssets();
+
+        // Exit selection mode
+        setState(() {
+          _isSelectionMode = false;
+          _selectedAssetIds.clear();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error removing photos: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRemoving = false;
+        });
+      }
+    }
   }
 
   int _getGridColumnCount(double width) {
@@ -188,6 +310,9 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
             apiService: widget.apiService,
             assetList: _assets,
             assetIndex: globalIndex >= 0 ? globalIndex : 0,
+            isSelectionMode: _isSelectionMode,
+            isSelected: _selectedAssetIds.contains(asset.id),
+            onSelectionToggle: () => _toggleAssetSelection(asset.id),
           );
         },
       ),
@@ -206,6 +331,9 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
           apiService: widget.apiService,
           assetList: _assets,
           assetIndex: index,
+          isSelectionMode: _isSelectionMode,
+          isSelected: _selectedAssetIds.contains(_assets[index].id),
+          onSelectionToggle: () => _toggleAssetSelection(_assets[index].id),
         );
       },
     );
@@ -218,31 +346,134 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent &&
             event.logicalKey == LogicalKeyboardKey.escape) {
-          Navigator.of(context).pop();
-          return KeyEventResult.handled;
+          if (_isSelectionMode) {
+            _toggleSelectionMode();
+            return KeyEventResult.handled;
+          } else {
+            Navigator.of(context).pop();
+            return KeyEventResult.handled;
+          }
         }
         return KeyEventResult.ignored;
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(widget.album.albumName),
+          title: _isSelectionMode
+              ? Text('${_selectedAssetIds.length} selected')
+              : Text(widget.album.albumName),
           backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+          leading: _isSelectionMode
+              ? IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: _toggleSelectionMode,
+                  tooltip: 'Exit selection mode',
+                )
+              : null,
           actions: [
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: _isLoading ? null : _refreshAssets,
-              tooltip: 'Refresh album',
-            ),
-            if (_assets.isNotEmpty)
+            if (_isSelectionMode) ...[
+              // Selection mode actions
+              if (_selectedAssetIds.length < _assets.length)
+                IconButton(
+                  icon: const Icon(Icons.select_all),
+                  onPressed: _selectAllAssets,
+                  tooltip: 'Select all',
+                ),
+              if (_selectedAssetIds.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.clear),
+                  onPressed: _clearSelection,
+                  tooltip: 'Clear selection',
+                ),
+              if (_selectedAssetIds.isNotEmpty)
+                IconButton(
+                  icon: _isRemoving
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.delete_outline),
+                  onPressed: _isRemoving ? null : _removeSelectedAssets,
+                  tooltip: 'Remove from album',
+                ),
+            ] else ...[
+              // Normal mode actions
               IconButton(
-                icon: Icon(_groupByMonth ? Icons.view_list : Icons.view_module),
-                onPressed: _toggleGrouping,
-                tooltip:
-                    _groupByMonth ? 'Switch to grid view' : 'Group by month',
+                icon: const Icon(Icons.refresh),
+                onPressed: _isLoading ? null : _refreshAssets,
+                tooltip: 'Refresh album',
               ),
+              if (_assets.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.checklist),
+                  onPressed: _toggleSelectionMode,
+                  tooltip: 'Select photos',
+                ),
+              if (_assets.isNotEmpty)
+                IconButton(
+                  icon:
+                      Icon(_groupByMonth ? Icons.view_list : Icons.view_module),
+                  onPressed: _toggleGrouping,
+                  tooltip:
+                      _groupByMonth ? 'Switch to grid view' : 'Group by month',
+                ),
+            ],
           ],
         ),
         body: _buildBody(),
+        bottomNavigationBar: _isSelectionMode && _selectedAssetIds.isNotEmpty
+            ? Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  border: Border(
+                    top: BorderSide(
+                      color: Colors.grey.shade300,
+                      width: 1,
+                    ),
+                  ),
+                ),
+                child: SafeArea(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${_selectedAssetIds.length} photo(s) selected',
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                        ),
+                      ),
+                      if (_selectedAssetIds.length < _assets.length)
+                        TextButton.icon(
+                          onPressed: _selectAllAssets,
+                          icon: const Icon(Icons.select_all, size: 18),
+                          label: const Text('Select All'),
+                        ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: _isRemoving ? null : _removeSelectedAssets,
+                        icon: _isRemoving
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.delete_outline, size: 18),
+                        label: Text(_isRemoving ? 'Removing...' : 'Remove'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : null,
       ),
     );
   }
