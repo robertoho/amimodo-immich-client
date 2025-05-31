@@ -25,6 +25,15 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   bool _hasMoreData = true;
   final ScrollController _scrollController = ScrollController();
   bool _hasPerformedInitialSearch = false;
+  bool _showStatusWidget = true; // Toggle for showing status widget
+
+  // Memory management constants
+  static const int _maxAssetsBeforeView = 300;
+  static const int _preloadAssetsAfterView = 300;
+  static const int _assetsPerPage = 50;
+
+  // Track current visible area for memory management
+  int _estimatedVisibleStartIndex = 0;
 
   // Search filters
   bool? _isFavorite;
@@ -67,13 +76,94 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
   void _scrollListener() {
     final position = _scrollController.position;
+
+    // Estimate current visible index based on scroll position
+    // Add safety checks to prevent division by zero and invalid arguments
+    if (_assets.isNotEmpty && position.hasContentDimensions) {
+      final maxScrollWithViewport =
+          position.maxScrollExtent + position.viewportDimension;
+      if (maxScrollWithViewport > 0) {
+        final scrollRatio = position.pixels / maxScrollWithViewport;
+        _estimatedVisibleStartIndex =
+            (scrollRatio * _assets.length).floor().clamp(0, _assets.length - 1);
+      } else {
+        _estimatedVisibleStartIndex = 0;
+      }
+    } else {
+      _estimatedVisibleStartIndex = 0;
+    }
+
     // Trigger pagination when close to bottom (within 200 pixels)
-    if (position.pixels >= position.maxScrollExtent - 200) {
+    if (position.hasContentDimensions &&
+        position.pixels >= position.maxScrollExtent - 200) {
       if (!_isLoading && _hasMoreData) {
         print('🔄 Triggering pagination: page ${_currentPage + 1}');
         print(
             '🔄 Current state: loading=$_isLoading, hasMore=$_hasMoreData, assets=${_assets.length}');
         _loadMoreAssets();
+      }
+    }
+
+    // Trigger memory cleanup periodically (only if we have content)
+    if (_assets.isNotEmpty && position.hasContentDimensions) {
+      _performMemoryManagement();
+    }
+  }
+
+  void _performMemoryManagement() {
+    // Safety checks to prevent ArgumentError
+    if (_assets.isEmpty ||
+        _assets.length < _maxAssetsBeforeView + _preloadAssetsAfterView) {
+      return;
+    }
+
+    // Ensure valid visible index
+    _estimatedVisibleStartIndex =
+        _estimatedVisibleStartIndex.clamp(0, _assets.length - 1);
+
+    // Calculate the range we want to keep in memory with safety bounds
+    final keepStartIndex = (_estimatedVisibleStartIndex - _maxAssetsBeforeView)
+        .clamp(0, _assets.length);
+    final keepEndIndex = (_estimatedVisibleStartIndex + _preloadAssetsAfterView)
+        .clamp(0, _assets.length);
+
+    // Additional safety check to ensure valid range
+    if (keepStartIndex >= keepEndIndex ||
+        keepStartIndex < 0 ||
+        keepEndIndex > _assets.length) {
+      print(
+          '🧹 Memory cleanup skipped: invalid range $keepStartIndex-$keepEndIndex');
+      return;
+    }
+
+    // Only cleanup if we can actually save some memory
+    if (keepStartIndex > 0 || keepEndIndex < _assets.length) {
+      try {
+        final assetsToKeep = _assets.sublist(keepStartIndex, keepEndIndex);
+        final removedFromStart = keepStartIndex;
+        final removedFromEnd = _assets.length - keepEndIndex;
+
+        print(
+            '🧹 Memory cleanup: keeping ${assetsToKeep.length} assets (removed $removedFromStart from start, $removedFromEnd from end)');
+        print(
+            '🧹 Visible index: $_estimatedVisibleStartIndex, Keep range: $keepStartIndex-$keepEndIndex');
+
+        setState(() {
+          _assets = assetsToKeep;
+          // Adjust the estimated visible index since we removed items from the start
+          _estimatedVisibleStartIndex =
+              (_estimatedVisibleStartIndex - removedFromStart)
+                  .clamp(0, _assets.length - 1);
+
+          // Adjust current page calculation based on what we kept
+          // This is approximate since we're dealing with a sliding window
+          _currentPage =
+              ((keepEndIndex / _assetsPerPage).ceil()).clamp(1, _currentPage);
+        });
+      } catch (e) {
+        print('❌ Error during memory cleanup: $e');
+        // Reset to safe state if something goes wrong
+        _estimatedVisibleStartIndex = 0;
       }
     }
   }
@@ -154,46 +244,79 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     });
 
     try {
-      final searchResult = await widget.apiService.searchMetadata(
-        page: _currentPage + 1,
-        size: 50,
-        order: _sortOrder,
-        isFavorite: _isFavorite,
-        isOffline: _isOffline,
-        isTrashed: _isTrashed,
-        isArchived: _isArchived,
-        withDeleted: _withDeleted,
-        withArchived: _withArchived,
-        type: _type,
-        city: _city,
-        country: _country,
-        make: _make,
-        model: _model,
-      );
+      // Preload 3 pages at once for better performance
+      const pagesToPreload = 3;
+      final List<Future<Map<String, dynamic>>> pageFutures = [];
 
-      List<dynamic> jsonList;
-      if (searchResult['assets'] is List) {
-        // Direct list structure
-        jsonList = searchResult['assets'] ?? [];
-      } else if (searchResult['assets'] is Map) {
-        // Nested structure with items
-        final assetsMap = searchResult['assets'] as Map<String, dynamic>;
-        jsonList = assetsMap['items'] ?? [];
-      } else {
-        jsonList = [];
+      // Create futures for up to 3 pages
+      for (int i = 1; i <= pagesToPreload; i++) {
+        final pageToLoad = _currentPage + i;
+        pageFutures.add(
+          widget.apiService.searchMetadata(
+            page: pageToLoad,
+            size: _assetsPerPage,
+            order: _sortOrder,
+            isFavorite: _isFavorite,
+            isOffline: _isOffline,
+            isTrashed: _isTrashed,
+            isArchived: _isArchived,
+            withDeleted: _withDeleted,
+            withArchived: _withArchived,
+            type: _type,
+            city: _city,
+            country: _country,
+            make: _make,
+            model: _model,
+          ),
+        );
       }
 
-      final assets =
-          jsonList.map((json) => ImmichAsset.fromJson(json)).toList();
+      // Execute all page loads in parallel
+      final List<Map<String, dynamic>> pageResults =
+          await Future.wait(pageFutures);
+
+      final List<ImmichAsset> allNewAssets = [];
+      int pagesLoaded = 0;
+
+      // Process each page result
+      for (int i = 0; i < pageResults.length; i++) {
+        final searchResult = pageResults[i];
+
+        List<dynamic> jsonList;
+        if (searchResult['assets'] is List) {
+          jsonList = searchResult['assets'] ?? [];
+        } else if (searchResult['assets'] is Map) {
+          final assetsMap = searchResult['assets'] as Map<String, dynamic>;
+          jsonList = assetsMap['items'] ?? [];
+        } else {
+          jsonList = [];
+        }
+
+        final pageAssets =
+            jsonList.map((json) => ImmichAsset.fromJson(json)).toList();
+
+        // If we get less than expected assets, this might be the last page
+        if (pageAssets.length < _assetsPerPage) {
+          allNewAssets.addAll(pageAssets);
+          pagesLoaded = i + 1;
+          break; // Stop loading more pages as we've reached the end
+        } else {
+          allNewAssets.addAll(pageAssets);
+          pagesLoaded = i + 1;
+        }
+      }
 
       setState(() {
-        _assets.addAll(assets);
-        _currentPage++;
-        _hasMoreData = assets.length == 50;
+        _assets.addAll(allNewAssets);
+        _currentPage += pagesLoaded;
+        // Check if we have more data based on the last page loaded
+        _hasMoreData = pagesLoaded == pagesToPreload &&
+            allNewAssets.length == (pagesLoaded * _assetsPerPage);
         _isLoading = false;
       });
+
       print(
-          '🔄 Completed _loadMoreAssets - loaded ${assets.length} assets, hasMore=$_hasMoreData, total=${_assets.length}');
+          '🔄 Completed _loadMoreAssets - loaded ${allNewAssets.length} assets from $pagesLoaded pages, hasMore=$_hasMoreData, total=${_assets.length}');
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -407,6 +530,16 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             onPressed: _assets.isNotEmpty ? _clearFilters : null,
             tooltip: 'Clear results',
           ),
+          IconButton(
+            icon: const Icon(Icons.visibility),
+            onPressed: () {
+              setState(() {
+                _showStatusWidget = !_showStatusWidget;
+              });
+            },
+            tooltip:
+                _showStatusWidget ? 'Hide status widget' : 'Show status widget',
+          ),
         ],
       ),
       body: _buildBody(),
@@ -553,6 +686,37 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                       ),
                     ),
                   ),
+                  // Sticky status widget showing pagination and memory info
+                  if (_showStatusWidget)
+                    SliverPersistentHeader(
+                      pinned: true,
+                      delegate: _StatusWidgetDelegate(
+                        height: _isLoading
+                            ? 140.0
+                            : 120.0, // Dynamic height based on loading state
+                        child: Container(
+                          color: Theme.of(context).scaffoldBackgroundColor,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(
+                                horizontal: 16.0, vertical: 8.0),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surface,
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Theme.of(context)
+                                      .shadowColor
+                                      .withOpacity(0.1),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: _buildStatusWidget(),
+                          ),
+                        ),
+                      ),
+                    ),
                   SliverPadding(
                     padding: const EdgeInsets.symmetric(horizontal: 16.0),
                     sliver: SliverMasonryGrid.count(
@@ -657,5 +821,177 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _hasPerformedInitialSearch = true;
       await _searchAssets();
     }
+  }
+
+  Widget _buildStatusWidget() {
+    // Calculate pagination statistics with memory management
+    final totalLoadedAssets = _assets.length;
+    final currentPageAssets =
+        _assets.isNotEmpty ? _assetsPerPage.clamp(0, totalLoadedAssets) : 0;
+
+    // With memory management, we need to estimate total position
+    final estimatedTotalAssets =
+        _currentPage * _assetsPerPage; // Conservative estimate
+    final assetsBeforeWindow = _estimatedVisibleStartIndex;
+    final assetsAfterWindow =
+        (totalLoadedAssets - _estimatedVisibleStartIndex - currentPageAssets)
+            .clamp(0, totalLoadedAssets);
+
+    // Calculate visible information
+    final loadingTileCount =
+        (_isLoading && _hasMoreData && _assets.isNotEmpty) ? 1 : 0;
+    final totalTilesInMemory = totalLoadedAssets + loadingTileCount;
+    final memoryEfficiency = totalLoadedAssets > 0
+        ? ((_maxAssetsBeforeView + _preloadAssetsAfterView) /
+                totalLoadedAssets *
+                100)
+            .clamp(0, 100)
+        : 100;
+
+    return Container(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Memory status with efficiency indicator
+          Row(
+            children: [
+              Icon(
+                Icons.memory,
+                size: 16,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Memory: $totalTilesInMemory tiles (${memoryEfficiency.toStringAsFixed(0)}% efficient)',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // Sliding window info
+          Wrap(
+            spacing: 16,
+            runSpacing: 4,
+            children: [
+              _buildStatusItem(
+                icon: Icons.skip_previous,
+                label: 'Window Before',
+                value: '$assetsBeforeWindow',
+                color: Colors.grey,
+              ),
+              _buildStatusItem(
+                icon: Icons.visibility,
+                label: 'In Memory',
+                value: '$totalLoadedAssets',
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              _buildStatusItem(
+                icon: Icons.skip_next,
+                label: 'Window After',
+                value: '$assetsAfterWindow',
+                color: Colors.grey,
+              ),
+              _buildStatusItem(
+                icon: Icons.pages,
+                label: 'Page',
+                value: '$_currentPage${_hasMoreData ? '+' : ''}',
+                color: Theme.of(context).colorScheme.secondary,
+              ),
+            ],
+          ),
+
+          // Loading indicator with memory info
+          if (_isLoading) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Theme.of(context).colorScheme.secondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Loading pages ${_currentPage + 1}-${_currentPage + 3}... (will cleanup old data)',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.secondary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusItem({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          icon,
+          size: 14,
+          color: color,
+        ),
+        const SizedBox(width: 4),
+        Text(
+          '$label: ',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: color.withOpacity(0.8),
+              ),
+        ),
+        Text(
+          value,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusWidgetDelegate extends SliverPersistentHeaderDelegate {
+  final Widget child;
+  final double height;
+
+  const _StatusWidgetDelegate({
+    required this.child,
+    this.height = 120.0, // Increased to accommodate all content
+  });
+
+  @override
+  Widget build(
+      BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return child;
+  }
+
+  @override
+  double get maxExtent => height;
+
+  @override
+  double get minExtent => height;
+
+  @override
+  bool shouldRebuild(covariant SliverPersistentHeaderDelegate oldDelegate) {
+    return true; // Rebuild to show loading state changes
   }
 }

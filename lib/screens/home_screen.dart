@@ -1,15 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
-import '../models/immich_asset.dart';
 import '../services/immich_api_service.dart';
 import '../services/grid_scale_service.dart';
-import '../widgets/photo_grid_item.dart';
-import '../widgets/pinch_zoom_grid.dart';
-import '../widgets/virtualized_photo_grid.dart';
 import 'settings_screen.dart';
 import 'albums_screen.dart';
 import 'metadata_search_screen.dart';
-import 'photos_grid.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -70,7 +64,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedIndex = index;
     });
 
-    // Mark albums tab as visited when first selected
+    // Mark albums tab as visited when selected (now at index 1)
     if (index == 1) {
       _albumsTabVisited = true;
     }
@@ -79,9 +73,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final List<Widget> screens = [
-      _buildPhotosTab(),
-      AlbumsScreen(apiService: _apiService),
-      MetadataSearchScreen(apiService: _apiService),
+      MetadataSearchScreen(apiService: _apiService), // Search is now first
+      AlbumsScreen(apiService: _apiService), // Albums is now second
     ];
 
     return Scaffold(
@@ -104,16 +97,12 @@ class _HomeScreenState extends State<HomeScreen> {
         type: BottomNavigationBarType.fixed,
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(
-            icon: Icon(Icons.photo_library),
-            label: 'Photos',
+            icon: Icon(Icons.search),
+            label: 'Search',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.photo_album),
             label: 'Albums',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.search),
-            label: 'Search',
           ),
         ],
         currentIndex: _selectedIndex,
@@ -125,17 +114,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String _getAppBarTitle() {
     switch (_selectedIndex) {
       case 0:
-        return 'Immich Photos';
+        return 'Advanced Search';
       case 1:
         return 'Albums';
-      case 2:
-        return 'Advanced Search';
       default:
-        return 'Immich Photos';
+        return 'Advanced Search';
     }
-  }
-
-  Widget _buildPhotosTab() {
-    return PhotosGrid(apiService: _apiService);
   }
 }
