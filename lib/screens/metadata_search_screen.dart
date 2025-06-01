@@ -13,7 +13,7 @@ class MetadataSearchScreen extends StatefulWidget {
   final ImmichApiService apiService;
   final VoidCallback? onOpenSettings;
 
-  const MetadataSearchScreen({
+  MetadataSearchScreen({
     super.key,
     required this.apiService,
     this.onOpenSettings,
@@ -36,6 +36,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   final ScrollController _scrollController = ScrollController();
   bool _hasPerformedInitialSearch = false;
   bool _showStatusWidget = true; // Toggle for showing status widget
+  final ValueNotifier<int> _selectedCountNotifier = ValueNotifier<int>(0);
 
   // Memory management constants
   static const int _maxAssetsBeforeView = 800;
@@ -48,7 +49,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   // Selection functionality
   bool _isSelectionMode = false;
   final Set<String> _selectedAssetIds = <String>{};
-
   // Drag selection state
   bool _isDragSelecting = false;
   Offset? _dragStart;
@@ -56,7 +56,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   Set<String> _originalSelectedAssetIds = {};
 
   // Grid item positions for drag selection
-  final Map<String, GlobalKey> _itemKeys = {};
+  final List<MapEntry<String, GlobalKey>> _itemKeys = [];
   final GlobalKey _gridKey = GlobalKey();
 
   // Path-based selection state
@@ -81,10 +81,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   String? _model;
   String _sortOrder = 'desc';
 
-  // Throttle selection updates to reduce rebuilds during drag
-  bool _isThrottling = false;
-  Set<String> _previousDragSelectedAssetIds = {};
-
   @override
   void initState() {
     super.initState();
@@ -103,6 +99,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     _gridScaleService.removeListener(_onGridScaleChanged);
     _backgroundThumbnailService.dispose();
     _clearAllItemKeys(); // Clear all GlobalKeys when disposing
+    _selectedCountNotifier.dispose();
+
     super.dispose();
   }
 
@@ -186,6 +184,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       return;
     }
 
+    // Clean up invalid contexts first
+    _cleanupInvalidContextKeys();
+
     // Ensure valid visible index
     _estimatedVisibleStartIndex =
         _estimatedVisibleStartIndex.clamp(0, _assets.length - 1);
@@ -208,24 +209,14 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     // Only cleanup if we can actually save some memory
     if (keepStartIndex > 0 || keepEndIndex < _assets.length) {
       try {
-        // IMMEDIATELY identify and remove GlobalKeys for assets that will be removed
-        final assetsToRemoveFromStart = keepStartIndex > 0
-            ? _assets.take(keepStartIndex).toList()
-            : <ImmichAsset>[];
-        final assetsToRemoveFromEnd = keepEndIndex < _assets.length
-            ? _assets.skip(keepEndIndex).toList()
-            : <ImmichAsset>[];
-
-        // Remove GlobalKeys BEFORE modifying the assets list
-        final removedKeyCount = _itemKeys.length;
-        for (final asset in assetsToRemoveFromStart) {
-          _itemKeys.remove(asset.id);
+        // Get asset IDs that will be removed so we can clean up their GlobalKeys
+        final assetsToRemove = <String>{};
+        if (keepStartIndex > 0) {
+          assetsToRemove.addAll(_assets.take(keepStartIndex).map((a) => a.id));
         }
-        for (final asset in assetsToRemoveFromEnd) {
-          _itemKeys.remove(asset.id);
+        if (keepEndIndex < _assets.length) {
+          assetsToRemove.addAll(_assets.skip(keepEndIndex).map((a) => a.id));
         }
-        final remainingKeyCount = _itemKeys.length;
-        final keysRemoved = removedKeyCount - remainingKeyCount;
 
         final assetsToKeep = _assets.sublist(keepStartIndex, keepEndIndex);
         final removedFromStart = keepStartIndex;
@@ -233,8 +224,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
         print(
             '🧹 Memory cleanup: keeping ${assetsToKeep.length} assets (removed $removedFromStart from start, $removedFromEnd from end)');
-        print(
-            '🔑 Removed $keysRemoved GlobalKeys immediately (${remainingKeyCount} keys remaining)');
         print(
             '🧹 Visible index: $_estimatedVisibleStartIndex, Keep range: $keepStartIndex-$keepEndIndex');
 
@@ -249,26 +238,22 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
           _currentPage =
               ((keepEndIndex / _assetsPerPage).ceil()).clamp(1, _currentPage);
 
-          // Final safety check: ensure we only have keys for assets that still exist
-          final currentAssetIds = _assets.map((asset) => asset.id).toSet();
-          final keysBeforeFinalCleanup = _itemKeys.length;
-          _itemKeys.removeWhere(
-              (assetId, key) => !currentAssetIds.contains(assetId));
-          final keysAfterFinalCleanup = _itemKeys.length;
-
-          if (keysBeforeFinalCleanup != keysAfterFinalCleanup) {
-            print(
-                '🔑 Final cleanup: removed ${keysBeforeFinalCleanup - keysAfterFinalCleanup} stale GlobalKeys');
+          // Aggressively clean up GlobalKeys for removed assets
+          for (final assetId in assetsToRemove) {
+            _itemKeys.removeWhere((entry) => entry.key == assetId);
           }
+
+          // Also ensure we only keep keys for assets that still exist
+          final currentAssetIds = _assets.map((asset) => asset.id).toSet();
+          _itemKeys
+              .removeWhere((entry) => !currentAssetIds.contains(entry.key));
         });
       } catch (e) {
         print('❌ Error during memory cleanup: $e');
         // Reset to safe state if something goes wrong
         _estimatedVisibleStartIndex = 0;
         // Clear all GlobalKeys on error to prevent conflicts
-        final clearedKeys = _itemKeys.length;
         _itemKeys.clear();
-        print('🔑 Error recovery: cleared all $clearedKeys GlobalKeys');
       }
     }
   }
@@ -654,8 +639,12 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     return Scaffold(
       appBar: AppBar(
         title: _isSelectionMode
-            ? Text(
-                '${_selectedAssetIds.length + _dragSelectedAssetIds.length} selected')
+            ? ValueListenableBuilder<int>(
+                valueListenable: _selectedCountNotifier,
+                builder: (context, selectedCount, _) {
+                  return Text('$selectedCount selected');
+                },
+              )
             : null,
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -666,8 +655,42 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                 tooltip: 'Exit selection',
               )
             : null,
-        actions:
-            _isSelectionMode ? _buildSelectionActions() : _buildNormalActions(),
+        actions: _isSelectionMode
+            ? [
+                ValueListenableBuilder<int>(
+                  valueListenable: _selectedCountNotifier,
+                  builder: (context, selectedCount, _) {
+                    return Row(
+                      // NOTA: aquí usamos Row para agrupar todos los IconButton
+                      // que antes devolvía _buildSelectionActions()
+                      children: [
+                        // 1) Icono de "Add to album"
+                        IconButton(
+                          icon: const Icon(Icons.album),
+                          onPressed: selectedCount > 0
+                              ? _showAddToAlbumDialog
+                              : null, // deshabilitado si no hay nada seleccionado
+                          tooltip: 'Add to album',
+                        ),
+
+                        // 2) Icono de "Select all" / "Clear selection"
+                        IconButton(
+                          icon: const Icon(Icons.select_all),
+                          onPressed: selectedCount == _assets.length
+                              ? _clearSelection
+                              : _selectAll,
+                          tooltip: selectedCount == _assets.length
+                              ? 'Clear selection'
+                              : 'Select all',
+                        ),
+
+                        // …si quieres añadir más acciones en modo selección, agrégalas aquí…
+                      ],
+                    );
+                  },
+                )
+              ]
+            : _buildNormalActions(),
       ),
       extendBodyBehindAppBar: true,
       body: _buildBody(),
@@ -1284,12 +1307,16 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   }
 
   void _enterSelectionMode() {
+    // Clean up any invalid contexts before entering selection mode
+    _cleanupInvalidContextKeys();
+
     setState(() {
       _isSelectionMode = true;
       // Force clear all GlobalKeys and regenerate them to prevent conflicts
       _itemKeys.clear();
       // Also clear any drag selection state
       _clearDragSelection();
+      _selectedCountNotifier.value = 0;
     });
   }
 
@@ -1300,12 +1327,14 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _clearDragSelection();
       // Clear GlobalKeys when exiting selection mode as they're no longer needed
       _itemKeys.clear();
+      _selectedCountNotifier.value = 0;
     });
   }
 
   void _selectAll() {
     setState(() {
       _selectedAssetIds.addAll(_assets.map((asset) => asset.id));
+      _selectedCountNotifier.value = _selectedAssetIds.length;
     });
   }
 
@@ -1316,19 +1345,17 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     });
   }
 
-  void _toggleAssetSelection(String assetId) {
+  void _toggleAssetSelection(String assetId, bool selected) {
     // Don't trigger a full rebuild if we're in drag selection mode
-    if (_isDragSelecting) {
-      return;
+    //  if (_isDragSelecting) {
+    //   return;
+    //}
+    if (_selectedAssetIds.contains(assetId)) {
+      _selectedAssetIds.remove(assetId);
+    } else {
+      _selectedAssetIds.add(assetId);
     }
-
-    setState(() {
-      if (_selectedAssetIds.contains(assetId)) {
-        _selectedAssetIds.remove(assetId);
-      } else {
-        _selectedAssetIds.add(assetId);
-      }
-    });
+    _selectedCountNotifier.value = _selectedAssetIds.length;
   }
 
   void _clearDragSelection() {
@@ -1342,13 +1369,13 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   void _startDragSelection(Offset position) {
     if (!_isSelectionMode) return;
 
-    setState(() {
-      _isDragSelecting = false; // Don't start immediately
-      _dragStart = position;
-      _originalSelectedAssetIds = Set.from(_selectedAssetIds);
-      _dragSelectedAssetIds.clear();
-      _lastSelectedAssetId = null;
-    });
+    // setState(() {
+    _isDragSelecting = false; // Don't start immediately
+    _dragStart = position;
+    _originalSelectedAssetIds = Set.from(_selectedAssetIds);
+    _dragSelectedAssetIds.clear();
+    _lastSelectedAssetId = null;
+    //});
   }
 
   void _updateDragSelection(Offset position) {
@@ -1359,50 +1386,16 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     final distance = (position - _dragStart!).distance;
 
     if (!_isDragSelecting && distance > minDragDistance) {
-      // Don't call setState here - just set the flag
+      // setState(() {
       _isDragSelecting = true;
+      //});
     }
 
     if (_isDragSelecting) {
-      // Update drag selection state without calling setState at all during dragging
-      final previousDragSelectionSize = _dragSelectedAssetIds.length;
+      //setState(() {
       _selectAssetAtPosition(position);
-
-      // Only trigger throttled update if selection count changed significantly
-      // This minimizes even the throttled updates
-      if ((_dragSelectedAssetIds.length - previousDragSelectionSize).abs() >=
-          3) {
-        _throttledUpdateSelection();
-      }
+      //});
     }
-  }
-
-  // Throttle selection updates to reduce rebuilds during drag
-  void _throttledUpdateSelection() {
-    if (_isThrottling) return;
-
-    _isThrottling = true;
-    // Use a short delay to batch multiple selection changes
-    Future.delayed(const Duration(milliseconds: 16), () {
-      if (mounted && _isSelectionMode) {
-        // Only call setState if the visual state actually changed
-        final currentDragSelection = Set<String>.from(_dragSelectedAssetIds);
-        if (!_setEquals(_previousDragSelectedAssetIds, currentDragSelection)) {
-          _previousDragSelectedAssetIds = currentDragSelection;
-          setState(() {
-            // This will update the selection UI but most grid items won't rebuild
-            // because their individual selection state didn't change
-          });
-        }
-      }
-      _isThrottling = false;
-    });
-  }
-
-  // Helper method to compare sets efficiently
-  bool _setEquals<T>(Set<T> set1, Set<T> set2) {
-    if (set1.length != set2.length) return false;
-    return set1.containsAll(set2);
   }
 
   void _selectAssetAtPosition(Offset position) {
@@ -1410,6 +1403,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     String? assetAtPosition = _getAssetAtPosition(position);
 
     if (assetAtPosition != null) {
+      // Find the PhotoGridItem widget for this asset and set its isSelected property
+      _setAssetSelected(assetAtPosition, true);
+
       // If we have a last selected asset and it's different from current,
       // fill the gap between them
       if (_lastSelectedAssetId != null &&
@@ -1417,37 +1413,80 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         _selectLinearPath(_lastSelectedAssetId!, assetAtPosition);
       }
 
-      // Always select the current asset
-      _dragSelectedAssetIds.add(assetAtPosition);
       _lastSelectedAssetId = assetAtPosition;
+    }
+  }
+
+  void _setAssetSelected(String assetId, bool selected) {
+    // Find the PhotoGridItem widget for this asset
+    for (final entry in _itemKeys) {
+      if (entry.key == assetId && entry.value.currentContext != null) {
+        final context = entry.value.currentContext!;
+
+        // Navigate up the widget tree to find the PhotoGridItem
+        Widget? widget = context.widget;
+        if (widget is PhotoGridItem) {
+          widget.setSelected(true);
+
+          // Trigger a rebuild of the widget
+          if (context.mounted) {
+            //  (context as StatefulElement).markNeedsBuild();
+          }
+          return;
+        }
+      }
     }
   }
 
   String? _getAssetAtPosition(Offset position) {
     // Check each asset to see if the position is within its bounds
     for (final asset in _assets) {
-      final itemKey = _itemKeys[asset.id];
-      if (itemKey?.currentContext != null) {
-        final RenderBox? renderBox =
-            itemKey!.currentContext!.findRenderObject() as RenderBox?;
-        if (renderBox != null) {
-          final RenderBox? gridRenderBox =
-              _gridKey.currentContext?.findRenderObject() as RenderBox?;
-          if (gridRenderBox != null) {
-            // Get the position of the item relative to the grid
-            final itemPosition =
-                renderBox.localToGlobal(Offset.zero, ancestor: gridRenderBox);
-            final itemSize = renderBox.size;
-            final itemRect = Rect.fromLTWH(
-              itemPosition.dx,
-              itemPosition.dy,
-              itemSize.width,
-              itemSize.height,
-            );
+      var matchingEntries =
+          _itemKeys.where((entry) => entry.key == asset.id).toList();
 
-            // Check if the position is within this item
-            if (itemRect.contains(position)) {
-              return asset.id;
+      if (matchingEntries.isNotEmpty) {
+        // Clean up duplicates if found
+        if (matchingEntries.length > 1) {
+          print(
+              '🔑 Found ${matchingEntries.length} duplicate keys for ${asset.id} in position check, checking contexts...');
+
+          // Filter out entries with invalid contexts
+          final validEntries = matchingEntries.where((entry) {
+            final context = entry.value.currentContext;
+            return context != null && context.mounted;
+          }).toList();
+
+          if (validEntries.isNotEmpty) {
+            // Keep only the first valid entry
+            _itemKeys.removeWhere((entry) => entry.key == asset.id);
+            _itemKeys.add(validEntries.first);
+            matchingEntries = [validEntries.first];
+          }
+        }
+
+        final itemKey = matchingEntries.first.value;
+        if (itemKey.currentContext != null) {
+          final RenderBox? renderBox =
+              itemKey.currentContext!.findRenderObject() as RenderBox?;
+          if (renderBox != null) {
+            final RenderBox? gridRenderBox =
+                _gridKey.currentContext?.findRenderObject() as RenderBox?;
+            if (gridRenderBox != null) {
+              // Get the position of the item relative to the grid
+              final itemPosition =
+                  renderBox.localToGlobal(Offset.zero, ancestor: gridRenderBox);
+              final itemSize = renderBox.size;
+              final itemRect = Rect.fromLTWH(
+                itemPosition.dx,
+                itemPosition.dy,
+                itemSize.width,
+                itemSize.height,
+              );
+
+              // Check if the position is within this item
+              if (itemRect.contains(position)) {
+                return asset.id;
+              }
             }
           }
         }
@@ -1469,26 +1508,57 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
     // Select all assets between (and including) the start and end indices
     for (int i = startIndex; i <= endIndex; i++) {
-      _dragSelectedAssetIds.add(_assets[i].id);
+      _setAssetSelected(_assets[i].id, true);
     }
+  }
+
+  void _endDragSelection() {
+    if (!_isDragSelecting) return;
+
+    // setState(() {
+    // Finalize the selection by combining original and drag selected
+    //   _selectedAssetIds.clear();
+    //   _selectedAssetIds.addAll(_originalSelectedAssetIds);
+    //    _selectedAssetIds.addAll(_dragSelectedAssetIds);
+    //   _clearDragSelection();
+    //});
   }
 
   GlobalKey _getItemKey(String assetId) {
-    // Ensure we don't create duplicate keys
-    if (_itemKeys.containsKey(assetId)) {
-      return _itemKeys[assetId]!;
-    }
+    // Create new key if none exists
     final key = GlobalKey();
-    _itemKeys[assetId] = key;
+    _itemKeys.add(MapEntry(assetId, key));
     return key;
   }
 
+  void _cleanupInvalidContextKeys() {
+    // Remove entries where the GlobalKey's context is no longer valid
+    final invalidEntries = <MapEntry<String, GlobalKey>>[];
+
+    for (final entry in _itemKeys) {
+      final context = entry.value.currentContext;
+      if (context == null || !context.mounted) {
+        invalidEntries.add(entry);
+      }
+    }
+
+    if (invalidEntries.isNotEmpty) {
+      print('🔑 Cleaning up ${invalidEntries.length} invalid context keys');
+      for (final invalidEntry in invalidEntries) {
+        _itemKeys.remove(invalidEntry);
+      }
+    }
+  }
+
   void _cleanupRemovedAssetKeys() {
+    // First clean up invalid contexts
+    _cleanupInvalidContextKeys();
+
     // Get current asset IDs
     final currentAssetIds = _assets.map((asset) => asset.id).toSet();
 
     // Remove keys for assets that are no longer in the list
-    _itemKeys.removeWhere((assetId, key) => !currentAssetIds.contains(assetId));
+    _itemKeys.removeWhere((entry) => !currentAssetIds.contains(entry.key));
 
     print(
         '🔑 GlobalKey cleanup: ${_itemKeys.length} keys remaining for ${_assets.length} assets');
@@ -1755,12 +1825,13 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
           final isSelected = _isAssetSelected(asset.id);
 
           final photoGridItem = PhotoGridItem(
-            key: _getItemKey(asset.id), //ValueKey('grid_item_${asset.id}'),
+            key: _getItemKey(asset.id),
             asset: asset,
             apiService: widget.apiService,
             isSelectionMode: _isSelectionMode,
             isSelected: isSelected,
-            onSelectionToggle: () => _toggleAssetSelection(asset.id),
+            onSelectionToggle: () =>
+                _toggleAssetSelection(asset.id, isSelected),
             assetList: _assets,
             assetIndex: globalIndex >= 0 ? globalIndex : 0,
           );
@@ -1836,12 +1907,12 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         final isSelected = _isAssetSelected(asset.id);
 
         final photoGridItem = PhotoGridItem(
-          key: _getItemKey(asset.id), //ValueKey('grid_item_${asset.id}'),
+          key: ValueKey('grid_item_${asset.id}'),
           asset: asset,
           apiService: widget.apiService,
           isSelectionMode: _isSelectionMode,
           isSelected: isSelected,
-          onSelectionToggle: () => _toggleAssetSelection(asset.id),
+          onSelectionToggle: () => _toggleAssetSelection(asset.id, isSelected),
           assetList: _assets,
           assetIndex: index,
         );
@@ -1876,18 +1947,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     return _selectedAssetIds.contains(assetId) ||
         _originalSelectedAssetIds.contains(assetId) ||
         _dragSelectedAssetIds.contains(assetId);
-  }
-
-  void _endDragSelection() {
-    if (!_isDragSelecting) return;
-
-    setState(() {
-      // Finalize the selection by combining original and drag selected
-      _selectedAssetIds.clear();
-      _selectedAssetIds.addAll(_originalSelectedAssetIds);
-      _selectedAssetIds.addAll(_dragSelectedAssetIds);
-      _clearDragSelection();
-    });
   }
 }
 

@@ -6,16 +6,16 @@ import '../services/immich_api_service.dart';
 import '../screens/photo_detail_screen.dart';
 import 'optimized_cached_thumbnail_image.dart';
 
-class PhotoGridItem extends StatelessWidget {
-  final ImmichAsset asset;
-  final ImmichApiService apiService;
-  final bool isSelectionMode;
-  final bool isSelected;
-  final VoidCallback? onSelectionToggle;
-  final List<ImmichAsset>? assetList;
-  final int? assetIndex;
+class PhotoGridItem extends StatefulWidget {
+  ImmichAsset asset;
+  ImmichApiService apiService;
+  bool isSelectionMode;
+  bool isSelected;
+  VoidCallback? onSelectionToggle;
+  List<ImmichAsset>? assetList;
+  int? assetIndex;
 
-  const PhotoGridItem({
+  PhotoGridItem({
     super.key,
     required this.asset,
     required this.apiService,
@@ -26,26 +26,47 @@ class PhotoGridItem extends StatelessWidget {
     this.assetIndex,
   });
 
+  void setSelected(bool selected) {
+    // This method will be called by the state when the widget is created
+    // We'll store a reference to the state and call its method
+    final state = (key as GlobalKey?)?.currentState as _PhotoGridItemState?;
+    state?.setSelected(selected);
+  }
+
+  @override
+  State<PhotoGridItem> createState() => _PhotoGridItemState();
+}
+
+class _PhotoGridItemState extends State<PhotoGridItem> {
+  void setSelected(bool selected) {
+    setState(() {
+      widget.isSelected = selected;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () {
-        if (isSelectionMode) {
-          onSelectionToggle?.call();
+        if (widget.isSelectionMode) {
+          widget.onSelectionToggle?.call();
+          setState(() {
+            widget.isSelected = !widget.isSelected;
+          });
         } else {
           Navigator.of(context).push(
             MaterialPageRoute(
               builder: (context) => PhotoDetailScreen(
-                assets: assetList ?? [asset],
-                initialIndex: assetIndex ?? 0,
-                apiService: apiService,
+                assets: widget.assetList ?? [widget.asset],
+                initialIndex: widget.assetIndex ?? 0,
+                apiService: widget.apiService,
               ),
             ),
           );
         }
       },
       onLongPress: () {
-        if (!isSelectionMode) {
+        if (!widget.isSelectionMode) {
           _showExifOverlay(context);
         }
       },
@@ -60,18 +81,18 @@ class PhotoGridItem extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 OptimizedCachedThumbnailImage(
-                  assetId: asset.id,
-                  apiService: apiService,
+                  assetId: widget.asset.id,
+                  apiService: widget.apiService,
                 ),
                 // Selection overlay
-                if (isSelectionMode)
+                if (widget.isSelectionMode)
                   Container(
-                    color: isSelected
+                    color: widget.isSelected
                         ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
                         : Colors.black.withOpacity(0.1),
                   ),
                 // Video indicator
-                if (asset.type.toUpperCase() == 'VIDEO')
+                if (widget.asset.type.toUpperCase() == 'VIDEO')
                   Positioned(
                     top: 8,
                     right: 8,
@@ -89,7 +110,7 @@ class PhotoGridItem extends StatelessWidget {
                     ),
                   ),
                 // Favorite indicator
-                if (asset.isFavorite)
+                if (widget.asset.isFavorite)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -107,28 +128,28 @@ class PhotoGridItem extends StatelessWidget {
                     ),
                   ),
                 // Selection indicator
-                if (isSelectionMode)
+                if (widget.isSelectionMode)
                   Positioned(
                     top: 8,
-                    right: isSelected
+                    right: widget.isSelected
                         ? 8
-                        : (asset.type.toUpperCase() == 'VIDEO' ? 32 : 8),
+                        : (widget.asset.type.toUpperCase() == 'VIDEO' ? 32 : 8),
                     child: Container(
                       width: 24,
                       height: 24,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: isSelected
+                        color: widget.isSelected
                             ? Theme.of(context).colorScheme.primary
                             : Colors.white.withOpacity(0.8),
                         border: Border.all(
-                          color: isSelected
+                          color: widget.isSelected
                               ? Theme.of(context).colorScheme.primary
                               : Colors.grey,
                           width: 2,
                         ),
                       ),
-                      child: isSelected
+                      child: widget.isSelected
                           ? const Icon(
                               Icons.check,
                               color: Colors.white,
@@ -179,7 +200,7 @@ class PhotoGridItem extends StatelessWidget {
 
     try {
       // Fetch detailed asset info
-      final assetInfo = await apiService.getAssetInfo(asset.id);
+      final assetInfo = await widget.apiService.getAssetInfo(widget.asset.id);
 
       // Close loading dialog
       Navigator.of(context).pop();
@@ -256,15 +277,15 @@ class PhotoGridItem extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _buildInfoSection('Basic Info', [
+                        _buildInfoRow('File Name',
+                            _getFileName(widget.asset.originalPath)),
+                        _buildInfoRow('Type', widget.asset.type),
                         _buildInfoRow(
-                            'File Name', _getFileName(asset.originalPath)),
-                        _buildInfoRow('Type', asset.type),
+                            'Created', _formatDateTime(widget.asset.createdAt)),
+                        _buildInfoRow('Modified',
+                            _formatDateTime(widget.asset.modifiedAt)),
                         _buildInfoRow(
-                            'Created', _formatDateTime(asset.createdAt)),
-                        _buildInfoRow(
-                            'Modified', _formatDateTime(asset.modifiedAt)),
-                        _buildInfoRow(
-                            'Favorite', asset.isFavorite ? 'Yes' : 'No'),
+                            'Favorite', widget.asset.isFavorite ? 'Yes' : 'No'),
                       ]),
                       if (exifInfo != null) ...[
                         SizedBox(height: 16),
