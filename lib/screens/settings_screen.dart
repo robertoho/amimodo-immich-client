@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/immich_api_service.dart';
+import '../services/account_manager.dart';
+import 'account_management_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ImmichApiService apiService;
@@ -14,9 +16,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   final _baseUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
+  final AccountManager _accountManager = AccountManager();
   bool _isLoading = false;
   String? _connectionStatus;
   bool _isApiKeyPlaceholder = false;
+  String? _activeAccountName;
 
   @override
   void initState() {
@@ -26,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _loadCurrentSettings() async {
     await widget.apiService.loadSettings();
+    await _accountManager.initialize();
 
     // Load the base URL if it exists
     if (widget.apiService.baseUrl != null) {
@@ -37,6 +42,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _apiKeyController.text = '••••••••••••••••'; // Show placeholder
       _isApiKeyPlaceholder = true;
     }
+
+    // Get active account name
+    final activeAccount = _accountManager.getActiveAccount();
+    _activeAccountName = activeAccount?.name;
 
     setState(() {});
   }
@@ -126,33 +135,135 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _openAccountManagement() async {
+    final result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (context) =>
+            AccountManagementScreen(apiService: widget.apiService),
+      ),
+    );
+
+    if (result == true) {
+      _loadCurrentSettings();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        title: const Text('Settings'),
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
-      extendBodyBehindAppBar: true,
-      body: Padding(
-        padding: EdgeInsets.only(
-          left: 16.0,
-          right: 16.0,
-          top: 16.0 + MediaQuery.of(context).padding.top + kToolbarHeight,
-          bottom: 16.0,
-        ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                'Immich Settings',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+              // Account Management Section
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Account Management',
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.manage_accounts),
+                            onPressed: _openAccountManagement,
+                            tooltip: 'Manage Accounts',
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      if (_activeAccountName != null)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.green.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.account_circle,
+                                  color: Colors.green.shade700),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Active Account: $_activeAccountName',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.green.shade700,
+                                      ),
+                                    ),
+                                    if (widget.apiService.baseUrl != null)
+                                      Text(
+                                        widget.apiService.baseUrl!,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.green.shade600,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.orange.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.warning,
+                                  color: Colors.orange.shade700),
+                              const SizedBox(width: 8),
+                              Text(
+                                'No account configured',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.orange.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: _openAccountManagement,
+                          icon: const Icon(Icons.settings),
+                          label: const Text('Manage Accounts'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(height: 16),
+
+              // Quick Settings Section (for backward compatibility)
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -160,8 +271,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Server Configuration',
+                        'Quick Configuration',
                         style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Quick edit for the current account',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
@@ -220,13 +339,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+
+              // Connection Status
               if (_connectionStatus != null)
                 Card(
                   color: _connectionStatus!.contains('successfully')
                       ? Colors.green.shade50
                       : Colors.red.shade50,
                   child: Padding(
-                    padding: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.all(16),
                     child: Row(
                       children: [
                         Icon(
@@ -244,6 +365,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               const SizedBox(height: 16),
+
+              // Action Buttons
               Row(
                 children: [
                   Expanded(
@@ -255,7 +378,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               height: 16,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(Icons.wifi_protected_setup),
+                          : const Icon(Icons.wifi_find),
                       label: const Text('Test Connection'),
                     ),
                   ),
@@ -267,7 +390,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
                             )
                           : const Icon(Icons.save),
                       label: const Text('Save Settings'),
@@ -276,6 +402,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
               const SizedBox(height: 24),
+
+              // Instructions
               const Card(
                 child: Padding(
                   padding: EdgeInsets.all(16.0),

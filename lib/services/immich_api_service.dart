@@ -1,46 +1,50 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'account_manager.dart';
 import '../models/immich_asset.dart';
 import '../models/immich_album.dart';
 
 class ImmichApiService {
-  static const String _baseUrlKey = 'immich_base_url';
-  static const String _apiKeyKey = 'immich_api_key';
-
-  String? _baseUrl;
-  String? _apiKey;
+  final AccountManager _accountManager = AccountManager();
 
   ImmichApiService();
 
   Future<void> loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    _baseUrl = prefs.getString(_baseUrlKey);
-    _apiKey = prefs.getString(_apiKeyKey);
+    // AccountManager handles loading, just ensure it's initialized
+    await _accountManager.initialize();
   }
 
   Future<void> saveSettings(String baseUrl, String apiKey) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_baseUrlKey, baseUrl);
+    // This method is now deprecated in favor of AccountManager methods
+    // but kept for compatibility with existing settings screen
+    final activeAccount = _accountManager.getActiveAccount();
 
-    // Only update API key if it's not empty (preserve existing key)
-    if (apiKey.isNotEmpty) {
-      await prefs.setString(_apiKeyKey, apiKey);
-      _apiKey = apiKey;
+    if (activeAccount != null) {
+      // Update existing account
+      await _accountManager.updateAccount(
+        activeAccount.id,
+        baseUrl: baseUrl,
+        apiKey: apiKey.isNotEmpty ? apiKey : null,
+      );
+    } else {
+      // Create new account
+      await _accountManager.addAccount(
+        name: 'Default Account',
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+      );
     }
-
-    _baseUrl = baseUrl;
   }
 
-  bool get isConfigured => _baseUrl != null && _apiKey != null;
+  bool get isConfigured => _accountManager.isConfigured();
 
-  String? get baseUrl => _baseUrl;
+  String? get baseUrl => _accountManager.getActiveBaseUrl();
 
-  bool get hasApiKey => _apiKey != null && _apiKey!.isNotEmpty;
+  bool get hasApiKey => _accountManager.getActiveApiKey()?.isNotEmpty ?? false;
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
-        'x-api-key': _apiKey ?? '',
+        'x-api-key': _accountManager.getActiveApiKey() ?? '',
       };
 
   Future<Map<String, dynamic>> searchAssets({
@@ -62,7 +66,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/search/assets');
+    final uri = Uri.parse('$baseUrl/api/search/assets');
 
     try {
       final requestBody = <String, dynamic>{
@@ -134,35 +138,35 @@ class ImmichApiService {
 
   String getThumbnailUrl(String assetId) {
     if (!isConfigured) return '';
-    final url = '$_baseUrl/api/assets/$assetId/thumbnail';
-    print('🔗 Generated thumbnail URL: $url');
+    final url = '$baseUrl/api/assets/$assetId/thumbnail';
+    //print('🔗 Generated thumbnail URL: $url');
     return url;
   }
 
   String getThumbnailUrlFallback(String assetId) {
     if (!isConfigured) return '';
-    final url = '$_baseUrl/api/assets/$assetId/view?size=thumbnail';
-    print('🔗 Generated fallback thumbnail URL: $url');
+    final url = '$baseUrl/api/assets/$assetId/view?size=thumbnail';
+    //print('🔗 Generated fallback thumbnail URL: $url');
     return url;
   }
 
   String getPreviewUrl(String assetId) {
     if (!isConfigured) return '';
-    final url = '$_baseUrl/api/assets/$assetId/view?size=preview';
-    print('🔗 Generated preview URL: $url');
+    final url = '$baseUrl/api/assets/$assetId/view?size=preview';
+    //print('🔗 Generated preview URL: $url');
     return url;
   }
 
   String getAssetUrl(String assetId) {
     if (!isConfigured) return '';
-    final url = '$_baseUrl/api/assets/$assetId/original';
+    final url = '$baseUrl/api/assets/$assetId/original';
     print('🔗 Generated asset URL: $url');
     return url;
   }
 
   String getAssetUrlFallback(String assetId) {
     if (!isConfigured) return '';
-    final url = '$_baseUrl/api/assets/$assetId/view?size=fullsize';
+    final url = '$baseUrl/api/assets/$assetId/view?size=fullsize';
     print('🔗 Generated fallback asset URL: $url');
     return url;
   }
@@ -182,7 +186,7 @@ class ImmichApiService {
     ];
 
     for (final endpoint in endpointsToTry) {
-      final uri = Uri.parse('$_baseUrl$endpoint');
+      final uri = Uri.parse('$baseUrl$endpoint');
 
       try {
         final response = await http.get(uri, headers: _headers);
@@ -203,7 +207,7 @@ class ImmichApiService {
   Future<void> debugApiEndpoints() async {
     if (!isConfigured) return;
 
-    print('🔍 Debugging API endpoints for base URL: $_baseUrl');
+    print('🔍 Debugging API endpoints for base URL: $baseUrl');
 
     // Test asset endpoints
     final assetEndpoints = [
@@ -214,7 +218,7 @@ class ImmichApiService {
     ];
 
     for (final endpoint in assetEndpoints) {
-      final uri = Uri.parse('$_baseUrl$endpoint');
+      final uri = Uri.parse('$baseUrl$endpoint');
 
       try {
         // Try GET first
@@ -244,7 +248,7 @@ class ImmichApiService {
   Future<Map<String, dynamic>?> getServerInfo() async {
     if (!isConfigured) return null;
 
-    final uri = Uri.parse('$_baseUrl/api/server/version');
+    final uri = Uri.parse('$baseUrl/api/server/version');
 
     try {
       final response = await http.get(uri, headers: _headers);
@@ -265,7 +269,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/albums').replace(
+    final uri = Uri.parse('$baseUrl/api/albums').replace(
       queryParameters: shared != null ? {'shared': shared.toString()} : null,
     );
 
@@ -286,14 +290,14 @@ class ImmichApiService {
 
   String getAlbumThumbnailUrl(String? assetId) {
     if (!isConfigured || assetId == null) return '';
-    final url = '$_baseUrl/api/assets/$assetId/thumbnail';
+    final url = '$baseUrl/api/assets/$assetId/thumbnail';
     print('🔗 Generated album thumbnail URL: $url');
     return url;
   }
 
   String getAlbumThumbnailUrlFallback(String? assetId) {
     if (!isConfigured || assetId == null) return '';
-    final url = '$_baseUrl/api/assets/$assetId/view?size=thumbnail';
+    final url = '$baseUrl/api/assets/$assetId/view?size=thumbnail';
     print('🔗 Generated album fallback thumbnail URL: $url');
     return url;
   }
@@ -303,7 +307,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/albums/$albumId');
+    final uri = Uri.parse('$baseUrl/api/albums/$albumId');
 
     try {
       final response = await http.get(uri, headers: _headers);
@@ -326,10 +330,10 @@ class ImmichApiService {
 
     // Test different thumbnail endpoints to find the working one
     final endpointsToTry = [
-      '$_baseUrl/api/assets/$assetId/view?size=thumbnail',
-      '$_baseUrl/api/assets/$assetId/thumbnail',
-      '$_baseUrl/api/assets/$assetId/view?size=preview',
-      '$_baseUrl/api/asset/$assetId/thumbnail',
+      '$baseUrl/api/assets/$assetId/view?size=thumbnail',
+      '$baseUrl/api/assets/$assetId/thumbnail',
+      '$baseUrl/api/assets/$assetId/view?size=preview',
+      '$baseUrl/api/asset/$assetId/thumbnail',
     ];
 
     for (final url in endpointsToTry) {
@@ -385,7 +389,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/search/metadata');
+    final uri = Uri.parse('$baseUrl/api/search/metadata');
 
     try {
       final requestBody = <String, dynamic>{
@@ -502,7 +506,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/albums/$albumId/assets');
+    final uri = Uri.parse('$baseUrl/api/albums/$albumId/assets');
 
     try {
       final requestBody = {
@@ -560,7 +564,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/albums/$albumId/assets');
+    final uri = Uri.parse('$baseUrl/api/albums/$albumId/assets');
 
     try {
       final requestBody = {
@@ -614,7 +618,7 @@ class ImmichApiService {
       throw Exception('API not configured. Please set base URL and API key.');
     }
 
-    final uri = Uri.parse('$_baseUrl/api/assets/$assetId');
+    final uri = Uri.parse('$baseUrl/api/assets/$assetId');
 
     try {
       final response = await http.get(uri, headers: _headers);

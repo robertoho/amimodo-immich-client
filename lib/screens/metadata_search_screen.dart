@@ -1823,7 +1823,10 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
           final asset = assets[index];
           final globalIndex = _assets.indexOf(asset);
           final isSelected = _isAssetSelected(asset.id);
-
+          if (globalIndex == 0) {
+            print(
+                '🐛 Asset $asset.id: globalIndex=$globalIndex, isSelected=$isSelected');
+          }
           final photoGridItem = PhotoGridItem(
             key: _getItemKey(asset.id),
             asset: asset,
