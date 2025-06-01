@@ -41,6 +41,7 @@ class _PhotoGridItemState extends State<PhotoGridItem> {
   void setSelected(bool selected) {
     setState(() {
       widget.isSelected = selected;
+      widget.onSelectionToggle?.call();
     });
   }
 

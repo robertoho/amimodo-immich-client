@@ -23,6 +23,8 @@ class PhotoDetailScreen extends StatefulWidget {
 class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   late int _currentIndex;
   late PageController _pageController;
+  final TransformationController _transformationController =
+      TransformationController();
 
   @override
   void initState() {
@@ -34,6 +36,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   @override
   void dispose() {
     _pageController.dispose();
+    _transformationController.dispose();
     super.dispose();
   }
 
@@ -41,6 +44,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
   void _goToPrevious() {
     if (_currentIndex > 0) {
+      _transformationController.value = Matrix4.identity();
       _pageController.previousPage(
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
@@ -50,6 +54,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
   void _goToNext() {
     if (_currentIndex < widget.assets.length - 1) {
+      _transformationController.value = Matrix4.identity();
       _pageController.nextPage(
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
@@ -104,24 +109,40 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
         body: PageView.builder(
           controller: _pageController,
           itemCount: widget.assets.length,
+          physics: _transformationController.value.isIdentity()
+              ? const PageScrollPhysics()
+              : const NeverScrollableScrollPhysics(),
           onPageChanged: (index) {
+            // Reset zoom when changing pages
+            _transformationController.value = Matrix4.identity();
             setState(() {
               _currentIndex = index;
             });
           },
           itemBuilder: (context, index) {
             final asset = widget.assets[index];
-            return Center(
-              child: InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 4.0,
-                child: FallbackNetworkImage(
-                  primaryUrl: widget.apiService.getAssetUrl(asset.id),
-                  fallbackUrl: widget.apiService.getAssetUrlFallback(asset.id),
-                  headers: widget.apiService.authHeaders,
-                  fit: BoxFit.contain,
-                  backgroundColor: Colors.black,
-                  placeholderColor: Colors.white,
+            return InteractiveViewer(
+              transformationController: _transformationController,
+              minScale: 0.5,
+              maxScale: 4.0,
+              onInteractionUpdate: (details) {
+                // Trigger rebuild to update PageView scroll physics
+                setState(() {});
+              },
+              child: Container(
+                width: double.infinity,
+                height: double.infinity,
+                color: Colors.black,
+                child: Center(
+                  child: FallbackNetworkImage(
+                    primaryUrl: widget.apiService.getAssetUrl(asset.id),
+                    fallbackUrl:
+                        widget.apiService.getAssetUrlFallback(asset.id),
+                    headers: widget.apiService.authHeaders,
+                    fit: BoxFit.contain,
+                    backgroundColor: Colors.black,
+                    placeholderColor: Colors.white,
+                  ),
                 ),
               ),
             );
