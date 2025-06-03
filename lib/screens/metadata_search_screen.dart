@@ -46,6 +46,11 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   // Track current visible area for memory management
   int _estimatedVisibleStartIndex = 0;
 
+  // Track pagination state independent of memory management
+  int _totalAssetsLoaded = 0; // Total number of assets loaded from API
+  int _assetsRemovedFromStart =
+      0; // Track how many assets were removed from start during cleanup
+
   // Selection functionality
   bool _isSelectionMode = false;
   final Set<String> _selectedAssetIds = <String>{};
@@ -138,19 +143,21 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     }
 
     // Trigger pagination when close to bottom (within 200 pixels)
+    // Pagination is independent of memory management - it's based on scroll position
+    // and tracks total pages loaded from API (_currentPage) vs assets in memory (_assets.length)
     if (position.hasContentDimensions &&
         position.pixels >= position.maxScrollExtent - 200) {
       if (!_isLoading && _hasMoreData) {
         print('🔄 Triggering pagination: page ${_currentPage + 1}');
         print(
-            '🔄 Current state: loading=$_isLoading, hasMore=$_hasMoreData, assets=${_assets.length}');
+            '🔄 Current state: loading=$_isLoading, hasMore=$_hasMoreData, assetsInMemory=${_assets.length}, totalLoaded=$_totalAssetsLoaded');
         _loadMoreAssets();
       }
     }
 
     // Trigger memory cleanup periodically (only if we have content)
     if (_assets.isNotEmpty && position.hasContentDimensions) {
-      // _performMemoryManagement();
+      _performMemoryManagement();
     }
   }
 
@@ -205,6 +212,11 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   }
 
   void _performMemoryManagement() {
+    // MEMORY MANAGEMENT: This method only manages which assets are kept in memory
+    // It does NOT affect pagination logic - _currentPage tracks API pages loaded
+    // _totalAssetsLoaded tracks total assets loaded from API
+    // _assetsRemovedFromStart tracks assets removed from start during cleanup
+
     // Safety checks to prevent ArgumentError
     if (_assets.isEmpty ||
         _assets.length < _maxAssetsBeforeView + _preloadAssetsAfterView) {
@@ -261,9 +273,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
               (_estimatedVisibleStartIndex - removedFromStart)
                   .clamp(0, _assets.length - 1);
 
-          // Adjust current page calculation based on what we kept
-          _currentPage =
-              ((keepEndIndex / _assetsPerPage).ceil()).clamp(1, _currentPage);
+          // Track assets removed from start for pagination calculations
+          _assetsRemovedFromStart += removedFromStart;
 
           // Aggressively clean up GlobalKeys for removed assets
           for (final assetId in assetsToRemove) {
@@ -300,6 +311,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _assets.clear();
       _itemKeys.clear(); // Clear GlobalKeys when clearing assets
       _currentPage = 1;
+      _totalAssetsLoaded = 0; // Reset total loaded count
+      _assetsRemovedFromStart = 0; // Reset removed count
     });
 
     try {
@@ -341,6 +354,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       setState(() {
         _assets = assets;
         _currentPage = 1;
+        _totalAssetsLoaded = assets.length; // Track total assets loaded
         _hasMoreData = assets.length == 50;
         _isLoading = false;
 
@@ -450,6 +464,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       setState(() {
         _assets.addAll(allNewAssets);
         _currentPage += pagesLoaded;
+        _totalAssetsLoaded +=
+            allNewAssets.length; // Track total assets loaded from API
         // Check if we have more data based on the last page loaded
         _hasMoreData = pagesLoaded == pagesToPreload &&
             allNewAssets.length == (pagesLoaded * _assetsPerPage);
@@ -482,7 +498,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       }
 
       print(
-          '🔄 Completed _loadMoreAssets - loaded ${allNewAssets.length} assets from $pagesLoaded pages, hasMore=$_hasMoreData, total=${_assets.length}');
+          '🔄 Completed _loadMoreAssets - loaded ${allNewAssets.length} assets from $pagesLoaded pages, hasMore=$_hasMoreData, totalLoaded=$_totalAssetsLoaded');
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -993,7 +1009,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                             ),
                             sliver: SliverToBoxAdapter(
                               child: Text(
-                                'Found ${_assets.length} asset${_assets.length == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
+                                'Found $_totalAssetsLoaded asset${_totalAssetsLoaded == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
                                 style: Theme.of(context).textTheme.titleMedium,
                               ),
                             ),
@@ -1072,7 +1088,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                           ),
                           sliver: SliverToBoxAdapter(
                             child: Text(
-                              'Found ${_assets.length} asset${_assets.length == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
+                              'Found $_totalAssetsLoaded asset${_totalAssetsLoaded == 1 ? '' : 's'}${_hasMoreData ? '+' : ''}',
                               style: Theme.of(context).textTheme.titleMedium,
                             ),
                           ),
@@ -1145,21 +1161,20 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     final currentPageAssets =
         _assets.isNotEmpty ? _assetsPerPage.clamp(0, totalLoadedAssets) : 0;
 
-    // With memory management, we need to estimate total position
-    final estimatedTotalAssets =
-        _currentPage * _assetsPerPage; // Conservative estimate
-    final assetsBeforeWindow = _estimatedVisibleStartIndex;
+    // Use proper total assets loaded tracking instead of estimation
+    final assetsBeforeWindow =
+        _assetsRemovedFromStart; // Assets removed from start during cleanup
     final assetsAfterWindow =
-        (totalLoadedAssets - _estimatedVisibleStartIndex - currentPageAssets)
-            .clamp(0, totalLoadedAssets);
+        (_totalAssetsLoaded - _assetsRemovedFromStart - totalLoadedAssets)
+            .clamp(0, _totalAssetsLoaded);
 
     // Calculate visible information
     final loadingTileCount =
         (_isLoading && _hasMoreData && _assets.isNotEmpty) ? 1 : 0;
     final totalTilesInMemory = totalLoadedAssets + loadingTileCount;
-    final memoryEfficiency = totalLoadedAssets > 0
+    final memoryEfficiency = _totalAssetsLoaded > 0
         ? ((_maxAssetsBeforeView + _preloadAssetsAfterView) /
-                totalLoadedAssets *
+                _totalAssetsLoaded *
                 100)
             .clamp(0, 100)
         : 100;
