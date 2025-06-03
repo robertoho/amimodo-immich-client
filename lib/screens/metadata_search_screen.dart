@@ -8,6 +8,7 @@ import '../widgets/photo_grid_item.dart';
 import '../widgets/pinch_zoom_grid.dart';
 import '../widgets/section_header.dart';
 import '../utils/date_utils.dart';
+import 'dart:async';
 
 class MetadataSearchScreen extends StatefulWidget {
   final ImmichApiService apiService;
@@ -46,6 +47,12 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   // Track current visible area for memory management
   int _estimatedVisibleStartIndex = 0;
 
+  // Preload starting index management
+  int _preloadStartIndex = 0; // The index to use for bidirectional preload
+  Timer? _scrollStopTimer; // Timer to detect when scrolling has stopped
+  static const Duration _scrollStopDelay =
+      Duration(seconds: 3); // Wait 3 seconds after scroll stops
+
   // Track pagination state independent of memory management
   int _totalAssetsLoaded = 0; // Total number of assets loaded from API
   int _assetsRemovedFromStart =
@@ -66,11 +73,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
   // Path-based selection state
   String? _lastSelectedAssetId;
-
-  // Photo grouping
-  bool _groupByMonth =
-      true; // Re-enable grouping by default with safe implementation
-  List<GroupedGridItem> _groupedItems = [];
 
   // Search filters
   bool? _isFavorite;
@@ -105,6 +107,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     _backgroundThumbnailService.dispose();
     _clearAllItemKeys(); // Clear all GlobalKeys when disposing
     _selectedCountNotifier.dispose();
+    _scrollStopTimer?.cancel(); // Cancel scroll stop timer
 
     super.dispose();
   }
@@ -135,11 +138,27 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         }
 
         _estimatedVisibleStartIndex = newVisibleIndex;
+
+        // Reset scroll stop timer - user is still scrolling
+        _resetScrollStopTimer();
       } else {
         _estimatedVisibleStartIndex = 0;
       }
     } else {
       _estimatedVisibleStartIndex = 0;
+    }
+
+    // Trigger reverse pagination when scrolling very close to the top (within 50 pixels from start)
+    // Only restore assets if we have removed assets AND user is actively scrolling up
+    // Make this more conservative to prevent sudden jumps
+    if (position.hasContentDimensions && position.pixels <= 50) {
+      if (!_isLoading && _assetsRemovedFromStart > 0) {
+        // Only trigger if we're really at the very top and have removed assets
+        print('🔄 Triggering reverse pagination: restoring assets from start');
+        print(
+            '🔄 Current state: loading=$_isLoading, assetsRemovedFromStart=$_assetsRemovedFromStart, assetsInMemory=${_assets.length}');
+        _loadPreviousAssets();
+      }
     }
 
     // Trigger pagination when close to bottom (within 200 pixels)
@@ -158,6 +177,34 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     // Trigger memory cleanup periodically (only if we have content)
     if (_assets.isNotEmpty && position.hasContentDimensions) {
       _performMemoryManagement();
+    }
+  }
+
+  /// Reset the scroll stop timer - called when user is actively scrolling
+  void _resetScrollStopTimer() {
+    _scrollStopTimer?.cancel();
+    _scrollStopTimer = Timer(_scrollStopDelay, _onScrollStopped);
+  }
+
+  /// Called when scrolling has stopped for the specified delay
+  void _onScrollStopped() {
+    // Calculate the global preload starting index based on current position
+    final globalStartIndex =
+        _assetsRemovedFromStart + _estimatedVisibleStartIndex;
+
+    // Only update if the position has changed significantly (more than 50 assets)
+    if ((globalStartIndex - _preloadStartIndex).abs() > 50) {
+      _preloadStartIndex = globalStartIndex;
+
+      debugPrint(
+          '🎯 Updated preload starting index to $globalStartIndex (visible: $_estimatedVisibleStartIndex, removed: $_assetsRemovedFromStart)');
+
+      // Update the status to reflect new starting position
+      if (mounted) {
+        setState(() {
+          // Force a rebuild to show updated position in status
+        });
+      }
     }
   }
 
@@ -358,16 +405,12 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         _hasMoreData = assets.length == 50;
         _isLoading = false;
 
-        // Generate grouped items if grouping is enabled
-        if (_groupByMonth && assets.isNotEmpty) {
-          final groupedAssets = PhotoDateUtils.groupAssetsByMonth(assets);
-          _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
-        } else {
-          _groupedItems = [];
-        }
-
         // Cleanup old GlobalKeys after setting new assets
         _cleanupRemovedAssetKeys();
+
+        // Initialize preload starting index to the beginning for new searches
+        _preloadStartIndex = 0;
+        _estimatedVisibleStartIndex = 0;
       });
 
       // Start background thumbnail downloads for all assets
@@ -471,14 +514,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             allNewAssets.length == (pagesLoaded * _assetsPerPage);
         _isLoading = false;
 
-        // Regenerate grouped items if grouping is enabled
-        if (_groupByMonth && _assets.isNotEmpty) {
-          final groupedAssets = PhotoDateUtils.groupAssetsByMonth(_assets);
-          _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
-        } else {
-          _groupedItems = [];
-        }
-
         // Cleanup old GlobalKeys after adding new assets
         _cleanupRemovedAssetKeys();
       });
@@ -515,6 +550,173 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     }
   }
 
+  Future<void> _loadPreviousAssets() async {
+    if (!widget.apiService.isConfigured || _assetsRemovedFromStart <= 0) return;
+
+    print('🔄 Starting _loadPreviousAssets - restoring removed assets');
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      // Calculate how many assets to restore (restore in smaller chunks to avoid sudden jumps)
+      final assetsToRestore = (_assetsRemovedFromStart)
+          .clamp(0, _assetsPerPage); // Only restore one page at a time
+
+      // Calculate which page to load based on the current memory window
+      // We need to determine what page contains the assets that were removed from start
+      final totalAssetsBeforeMemoryWindow = _assetsRemovedFromStart;
+
+      // Calculate which page contains the assets we need to restore
+      // The page number is based on how many assets were removed from start
+      final pageToLoad = ((totalAssetsBeforeMemoryWindow - assetsToRestore) ~/
+              _assetsPerPage) +
+          1;
+      final pageToLoadClamped = pageToLoad.clamp(1, _currentPage);
+
+      print(
+          '🔄 Restoring $assetsToRestore assets from page $pageToLoadClamped (calculated from ${totalAssetsBeforeMemoryWindow} assets removed from start)');
+      print(
+          '🔄 Current page: $_currentPage, Total loaded: $_totalAssetsLoaded');
+
+      final searchResult = await widget.apiService.searchMetadata(
+        page:
+            pageToLoadClamped, // Load the calculated page instead of always page 1
+        size: _assetsPerPage,
+        order: _sortOrder,
+        isFavorite: _isFavorite,
+        isOffline: _isOffline,
+        isTrashed: _isTrashed,
+        isArchived: _isArchived,
+        withDeleted: _withDeleted,
+        withArchived: _withArchived,
+        type: _type,
+        city: _city,
+        country: _country,
+        make: _make,
+        model: _model,
+      );
+
+      List<dynamic> jsonList;
+      if (searchResult['assets'] is List) {
+        jsonList = searchResult['assets'] ?? [];
+      } else if (searchResult['assets'] is Map) {
+        final assetsMap = searchResult['assets'] as Map<String, dynamic>;
+        jsonList = assetsMap['items'] ?? [];
+      } else {
+        jsonList = [];
+      }
+
+      final restoredAssets =
+          jsonList.map((json) => ImmichAsset.fromJson(json)).toList();
+
+      // Only take the assets that were actually removed (don't duplicate existing assets)
+      final currentAssetIds = _assets.map((asset) => asset.id).toSet();
+      final assetsToAdd = restoredAssets
+          .where((asset) => !currentAssetIds.contains(asset.id))
+          .take(assetsToRestore)
+          .toList();
+
+      if (assetsToAdd.isNotEmpty) {
+        // Store current scroll position more accurately
+        final currentScrollPosition =
+            _scrollController.position.pixels.toDouble();
+        final currentScrollExtent = _scrollController.position.maxScrollExtent;
+
+        setState(() {
+          // Add restored assets to the beginning of the list
+          _assets.insertAll(0, assetsToAdd);
+
+          // Update tracking variables
+          _assetsRemovedFromStart =
+              (_assetsRemovedFromStart - assetsToAdd.length)
+                  .clamp(0, _totalAssetsLoaded);
+
+          // Adjust visible index since we added items to the start
+          _estimatedVisibleStartIndex =
+              (_estimatedVisibleStartIndex + assetsToAdd.length)
+                  .clamp(0, _assets.length - 1);
+
+          // Update current page to reflect we're now viewing assets from earlier pages
+          // Calculate the effective current page based on the assets currently in memory
+          final effectiveStartPage = ((_totalAssetsLoaded -
+                      _assets.length -
+                      _assetsRemovedFromStart) ~/
+                  _assetsPerPage) +
+              1;
+          _currentPage = effectiveStartPage.clamp(1, _currentPage);
+
+          _isLoading = false;
+
+          // Cleanup old GlobalKeys after adding assets
+          _cleanupRemovedAssetKeys();
+        });
+
+        // Improved scroll position adjustment to prevent sudden jumps
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients &&
+              _scrollController.position.hasContentDimensions) {
+            // Calculate the estimated height per item based on current grid
+            final columnCount =
+                _getGridColumnCount(MediaQuery.of(context).size.width);
+            final itemsPerRow = columnCount;
+            final addedRows = (assetsToAdd.length / itemsPerRow).ceil();
+
+            // Estimate item height (assuming square items with current grid scale)
+            final screenWidth = MediaQuery.of(context).size.width;
+            final itemWidth =
+                (screenWidth - 32) / columnCount; // 32 for padding
+            final estimatedItemHeight = itemWidth; // Square items
+            final estimatedAddedHeight =
+                (addedRows * estimatedItemHeight).toDouble();
+
+            // More conservative scroll adjustment
+            final newScrollPosition =
+                (currentScrollPosition + estimatedAddedHeight * 0.8)
+                    .clamp(0.0, _scrollController.position.maxScrollExtent);
+
+            // Use animateTo instead of jumpTo for smoother transition
+            _scrollController.animateTo(
+              newScrollPosition,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+            );
+
+            print(
+                '🔄 Smoothly adjusted scroll position: $currentScrollPosition -> $newScrollPosition (added ${assetsToAdd.length} assets, estimated height: $estimatedAddedHeight)');
+          }
+        });
+
+        // Start background thumbnail downloads for restored assets
+        print(
+            '🚀 Starting background thumbnail downloads for ${assetsToAdd.length} restored assets');
+        _backgroundThumbnailService.startBackgroundDownload(
+            assetsToAdd, widget.apiService);
+
+        print(
+            '🔄 Completed _loadPreviousAssets - restored ${assetsToAdd.length} assets from page $pageToLoadClamped, assetsRemovedFromStart now: $_assetsRemovedFromStart, updated currentPage to $_currentPage');
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
+        print('🔄 No new assets to restore from page $pageToLoadClamped');
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      print('❌ Error in _loadPreviousAssets: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading previous results: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _clearFilters() {
     setState(() {
       _isFavorite = null;
@@ -530,7 +732,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _model = null;
       _sortOrder = 'desc';
       _assets.clear();
-      _groupedItems.clear();
       _itemKeys.clear(); // Clear GlobalKeys when clearing assets
     });
     // Perform search with cleared filters
@@ -784,13 +985,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         onPressed: _showFilterDialog,
         tooltip: 'Search filters',
       ),
-      // Grouping toggle
-      if (_assets.isNotEmpty)
-        IconButton(
-          icon: Icon(_groupByMonth ? Icons.view_list : Icons.view_module),
-          onPressed: _toggleGrouping,
-          tooltip: _groupByMonth ? 'Switch to grid view' : 'Group by month',
-        ),
       // Background download controls
       if (_assets.isNotEmpty)
         StreamBuilder<BackgroundDownloadStatus>(
@@ -798,7 +992,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
           builder: (context, snapshot) {
             final status =
                 snapshot.data ?? _backgroundThumbnailService.currentStatus;
-            if (status.total > 0) {
+            if (status.total > 0 || status.isFullPreloadRunning) {
               return IconButton(
                 icon: Icon(
                   status.isRunning
@@ -825,6 +1019,33 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             return const SizedBox.shrink();
           },
         ),
+      // Full preload button
+      if (_assets.isNotEmpty)
+        StreamBuilder<BackgroundDownloadStatus>(
+          stream: _backgroundThumbnailService.statusStream,
+          builder: (context, snapshot) {
+            final status =
+                snapshot.data ?? _backgroundThumbnailService.currentStatus;
+            return IconButton(
+              icon: Icon(
+                status.isFullPreloadRunning
+                    ? Icons.cloud_download
+                    : Icons.cloud_sync,
+                color: status.isFullPreloadRunning ? Colors.orange : null,
+              ),
+              onPressed: status.isFullPreloadRunning
+                  ? () {
+                      _backgroundThumbnailService.stopFullPreload();
+                    }
+                  : () {
+                      _startFullPreload();
+                    },
+              tooltip: status.isFullPreloadRunning
+                  ? 'Stop full preload'
+                  : 'Preload all thumbnails',
+            );
+          },
+        ),
       // Test button to manually trigger loading
       if (_assets.isNotEmpty && _hasMoreData)
         IconButton(
@@ -834,6 +1055,16 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             _loadMoreAssets();
           },
           tooltip: 'Test load more',
+        ),
+      // Test button to manually trigger reverse loading
+      if (_assets.isNotEmpty && _assetsRemovedFromStart > 0)
+        IconButton(
+          icon: const Icon(Icons.refresh_outlined),
+          onPressed: () {
+            print('🧪 Manual test: triggering _loadPreviousAssets');
+            _loadPreviousAssets();
+          },
+          tooltip: 'Test load previous',
         ),
       if (_assets.isNotEmpty)
         IconButton(
@@ -1019,9 +1250,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                             SliverPersistentHeader(
                               pinned: true,
                               delegate: _StatusWidgetDelegate(
-                                height: _isLoading
-                                    ? 140.0
-                                    : 120.0, // Dynamic height based on loading state
+                                height:
+                                    160.0, // Increased height to accommodate full preload status
                                 child: Container(
                                   color:
                                       Theme.of(context).scaffoldBackgroundColor,
@@ -1049,9 +1279,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                             ),
                           SliverPadding(
                             padding: const EdgeInsets.all(0),
-                            sliver: _groupByMonth && _groupedItems.isNotEmpty
-                                ? _buildGroupedGrid(columnCount)
-                                : _buildUngroupedGrid(columnCount),
+                            sliver: _buildUngroupedGrid(columnCount),
                           ),
                         ],
                         if (_isLoading && _assets.isEmpty)
@@ -1098,9 +1326,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                           SliverPersistentHeader(
                             pinned: true,
                             delegate: _StatusWidgetDelegate(
-                              height: _isLoading
-                                  ? 140.0
-                                  : 120.0, // Dynamic height based on loading state
+                              height:
+                                  160.0, // Increased height to accommodate full preload status
                               child: Container(
                                 color:
                                     Theme.of(context).scaffoldBackgroundColor,
@@ -1128,9 +1355,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                           ),
                         SliverPadding(
                           padding: const EdgeInsets.all(0),
-                          sliver: _groupByMonth && _groupedItems.isNotEmpty
-                              ? _buildGroupedGrid(columnCount)
-                              : _buildUngroupedGrid(columnCount),
+                          sliver: _buildUngroupedGrid(columnCount),
                         ),
                       ],
                       if (_isLoading && _assets.isEmpty)
@@ -1151,7 +1376,132 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   Future<void> _performInitialSearch() async {
     if (!_hasPerformedInitialSearch) {
       _hasPerformedInitialSearch = true;
+
+      // Initialize preload starting index to 0 for initial search
+      _preloadStartIndex = 0;
+
       await _searchAssets();
+    }
+  }
+
+  /// Start full preload of all thumbnails with current search filters
+  Future<void> _startFullPreload() async {
+    if (!widget.apiService.isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please configure your Immich server settings first'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Use the current preload starting index (updated based on scroll position)
+    final startingIndex = _preloadStartIndex;
+
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Start Full Preload'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This will download thumbnails for ALL assets matching your current search filters, starting from your current position and expanding outward.',
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Starting from position ${startingIndex + 1} of ${_totalAssetsLoaded} total assets.',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Currently viewing position ${_estimatedVisibleStartIndex + 1} of ${_assets.length} visible assets.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'This process may take a while and use significant bandwidth and storage.',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Current filters:',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_isFavorite != null)
+                Text(
+                    '• Favorites: ${_isFavorite! ? "Only favorites" : "Non-favorites"}'),
+              if (_type != null) Text('• Type: $_type'),
+              if (_city != null) Text('• City: $_city'),
+              if (_country != null) Text('• Country: $_country'),
+              if (_make != null) Text('• Camera make: $_make'),
+              if (_model != null) Text('• Camera model: $_model'),
+              if (_isOffline == true) const Text('• Including offline assets'),
+              if (_isTrashed == true) const Text('• Including trashed assets'),
+              if (_isArchived == true)
+                const Text('• Including archived assets'),
+              Text('• Sort order: $_sortOrder'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Start Preload'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      debugPrint(
+          '🎯 Starting preload from global index $startingIndex (visible: $_estimatedVisibleStartIndex, removed: $_assetsRemovedFromStart)');
+
+      // Start the full preload with current search filters and position
+      await _backgroundThumbnailService.startFullPreload(
+        widget.apiService,
+        startIndex: startingIndex,
+        isFavorite: _isFavorite,
+        isOffline: _isOffline,
+        isTrashed: _isTrashed,
+        isArchived: _isArchived,
+        withDeleted: _withDeleted,
+        withArchived: _withArchived,
+        type: _type,
+        city: _city,
+        country: _country,
+        make: _make,
+        model: _model,
+        sortOrder: _sortOrder,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Full thumbnail preload started from position ${startingIndex + 1}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     }
   }
 
@@ -1210,52 +1560,102 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             builder: (context, snapshot) {
               final status =
                   snapshot.data ?? _backgroundThumbnailService.currentStatus;
-              if (status.total > 0) {
+              if (status.total > 0 || status.isFullPreloadRunning) {
                 return Column(
                   children: [
-                    Row(
-                      children: [
-                        Icon(
-                          status.isRunning
-                              ? Icons.download
-                              : status.isPaused
-                                  ? Icons.pause
-                                  : Icons.download_done,
-                          size: 16,
-                          color: status.isRunning
-                              ? Colors.green
-                              : status.isPaused
-                                  ? Colors.orange
-                                  : Colors.blue,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Thumbnails: ${status.completed}/${status.total} (${(status.progress * 100).toStringAsFixed(0)}%)',
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                    color: status.isRunning
-                                        ? Colors.green
-                                        : status.isPaused
-                                            ? Colors.orange
-                                            : Colors.blue,
-                                  ),
-                        ),
-                        if (status.isRunning && status.downloading > 0) ...[
+                    // Regular background download status
+                    if (status.total > 0) ...[
+                      Row(
+                        children: [
+                          Icon(
+                            status.isRunning
+                                ? Icons.download
+                                : status.isPaused
+                                    ? Icons.pause
+                                    : Icons.download_done,
+                            size: 16,
+                            color: status.isRunning
+                                ? Colors.green
+                                : status.isPaused
+                                    ? Colors.orange
+                                    : Colors.blue,
+                          ),
                           const SizedBox(width: 8),
-                          SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: const AlwaysStoppedAnimation<Color>(
-                                  Colors.green),
+                          Text(
+                            'Thumbnails: ${status.completed}/${status.total} (${(status.progress * 100).toStringAsFixed(0)}%)',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                      color: status.isRunning
+                                          ? Colors.green
+                                          : status.isPaused
+                                              ? Colors.orange
+                                              : Colors.blue,
+                                    ),
+                          ),
+                          if (status.isRunning && status.downloading > 0) ...[
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: const AlwaysStoppedAnimation<Color>(
+                                    Colors.green),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                    ],
+                    // Full preload status
+                    if (status.isFullPreloadRunning ||
+                        status.totalAssetsDiscovered > 0) ...[
+                      Row(
+                        children: [
+                          Icon(
+                            status.isFullPreloadRunning
+                                ? Icons.cloud_download
+                                : Icons.cloud_done,
+                            size: 16,
+                            color: status.isFullPreloadRunning
+                                ? Colors.orange
+                                : Colors.purple,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              status.fullPreloadStatusText,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: status.isFullPreloadRunning
+                                        ? Colors.orange
+                                        : Colors.purple,
+                                  ),
                             ),
                           ),
+                          if (status.isFullPreloadRunning &&
+                              status.totalAssetsDiscovered > 0) ...[
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                value: status.fullPreloadProgress,
+                                valueColor: const AlwaysStoppedAnimation<Color>(
+                                    Colors.orange),
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
-                    ),
-                    const SizedBox(height: 4),
+                      ),
+                      const SizedBox(height: 4),
+                    ],
                   ],
                 );
               }
@@ -1292,6 +1692,12 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                 value: '$_currentPage${_hasMoreData ? '+' : ''}',
                 color: Theme.of(context).colorScheme.secondary,
               ),
+              _buildStatusItem(
+                icon: Icons.my_location,
+                label: 'Preload Start',
+                value: '${_preloadStartIndex + 1}',
+                color: Colors.orange,
+              ),
             ],
           ),
 
@@ -1312,7 +1718,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'Loading pages ${_currentPage + 1}-${_currentPage + 3}... (will cleanup old data)',
+                  _assetsRemovedFromStart > 0
+                      ? 'Restoring previous assets...'
+                      : 'Loading pages ${_currentPage + 1}-${_currentPage + 3}... (will cleanup old data)',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(context).colorScheme.secondary,
                         fontStyle: FontStyle.italic,
@@ -1787,114 +2195,6 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         );
       }
     }
-  }
-
-  void _toggleGrouping() {
-    setState(() {
-      _groupByMonth = !_groupByMonth;
-
-      if (_groupByMonth && _assets.isNotEmpty) {
-        // Generate grouped items
-        final groupedAssets = PhotoDateUtils.groupAssetsByMonth(_assets);
-        _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
-      } else {
-        // Clear grouped items for ungrouped view
-        _groupedItems = [];
-      }
-
-      // Cleanup GlobalKeys when changing grouping mode as widget structure changes
-      _cleanupRemovedAssetKeys();
-    });
-  }
-
-  Widget _buildGroupedGrid(int columnCount) {
-    if (_groupedItems.isEmpty) {
-      return const SliverToBoxAdapter(child: SizedBox.shrink());
-    }
-
-    // Group consecutive assets by month for better rendering
-    List<Widget> groupedWidgets = [];
-    List<ImmichAsset> currentMonthAssets = [];
-    String? currentMonthTitle;
-
-    for (int i = 0; i < _groupedItems.length; i++) {
-      final item = _groupedItems[i];
-
-      if (item.type == GroupedGridItemType.header) {
-        // Add previous month's assets as a grid if any
-        if (currentMonthAssets.isNotEmpty && currentMonthTitle != null) {
-          groupedWidgets.add(_buildMonthGrid(currentMonthAssets, columnCount));
-        }
-
-        // Add section header
-        groupedWidgets.add(SectionHeader(
-          title: item.displayText!,
-          assetCount: item.assetCount!,
-        ));
-
-        // Reset for new month
-        currentMonthAssets = [];
-        currentMonthTitle = item.displayText;
-      } else {
-        // Collect assets for current month
-        if (item.asset != null) {
-          currentMonthAssets.add(item.asset!);
-        }
-      }
-    }
-
-    // Add the last month's assets
-    if (currentMonthAssets.isNotEmpty) {
-      groupedWidgets.add(_buildMonthGrid(currentMonthAssets, columnCount));
-    }
-
-    // Return as a SliverList with proper widgets
-    return SliverList(
-      delegate: SliverChildBuilderDelegate(
-        (context, index) => groupedWidgets[index],
-        childCount: groupedWidgets.length,
-      ),
-    );
-  }
-
-  Widget _buildMonthGrid(List<ImmichAsset> assets, int columnCount) {
-    // Create a grid layout for photos within a month
-    return Container(
-      margin: const EdgeInsets.all(0), // Remove margin for seamless layout
-      child: GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: columnCount,
-          crossAxisSpacing: 0, // Remove gaps between tiles
-          mainAxisSpacing: 0, // Remove gaps between tiles
-          childAspectRatio: 1.0,
-        ),
-        itemCount: assets.length,
-        itemBuilder: (context, index) {
-          final asset = assets[index];
-          final globalIndex = _assets.indexOf(asset);
-          final isSelected = _isAssetSelected(asset.id);
-          if (globalIndex == 0) {
-            print(
-                '🐛 Asset $asset.id: globalIndex=$globalIndex, isSelected=$isSelected');
-          }
-          final photoGridItem = PhotoGridItem(
-            key: _getItemKey(asset.id),
-            asset: asset,
-            apiService: widget.apiService,
-            isSelectionMode: _isSelectionMode,
-            isSelected: isSelected,
-            onSelectionToggle: () =>
-                _toggleAssetSelection(asset.id, isSelected),
-            assetList: _assets,
-            assetIndex: globalIndex >= 0 ? globalIndex : 0,
-          );
-
-          return photoGridItem;
-        },
-      ),
-    );
   }
 
   Widget _buildUngroupedGrid(int columnCount) {

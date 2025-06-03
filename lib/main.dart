@@ -3,6 +3,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'screens/home_screen.dart';
 import 'services/grid_scale_service.dart';
 import 'services/thumbnail_cache_service.dart';
+import 'services/background_thumbnail_service.dart';
 import 'services/account_manager.dart';
 import 'models/thumbnail_cache_entry.dart';
 import 'models/account.dart';
@@ -26,6 +27,10 @@ void main() async {
 
   final cacheService = ThumbnailCacheService();
   await cacheService.initialize();
+
+  // Initialize BackgroundThumbnailService to restore cached thumbnail count
+  final backgroundService = BackgroundThumbnailService();
+  await backgroundService.initialize();
 
   // Initialize AccountManager
   final accountManager = AccountManager();

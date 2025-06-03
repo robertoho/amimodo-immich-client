@@ -381,4 +381,34 @@ class ThumbnailCacheService {
       return false;
     }
   }
+
+  // Get the total count of cached thumbnails
+  Future<int> getCachedThumbnailCount() async {
+    if (_cacheBox == null) {
+      await initialize();
+      if (_cacheBox == null) return 0;
+    }
+
+    try {
+      return _cacheBox!.length;
+    } catch (e) {
+      debugPrint('❌ Error getting cached thumbnail count: $e');
+      return 0;
+    }
+  }
+
+  // Check how many thumbnails are cached for a specific list of asset IDs
+  Future<int> getCachedCountForAssets(
+      List<String> assetIds, String Function(String) getThumbnailUrl) async {
+    if (_cacheBox == null) return 0;
+
+    int cachedCount = 0;
+    for (final assetId in assetIds) {
+      final thumbnailUrl = getThumbnailUrl(assetId);
+      if (await isCached(thumbnailUrl)) {
+        cachedCount++;
+      }
+    }
+    return cachedCount;
+  }
 }
