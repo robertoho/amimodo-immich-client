@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import '../models/immich_asset.dart';
 import '../services/immich_api_service.dart';
 import '../widgets/fallback_network_image.dart';
+import '../widgets/smooth_interactive_viewer.dart';
+import 'dart:math' as math;
 
 class PhotoDetailScreen extends StatefulWidget {
   final List<ImmichAsset> assets;
@@ -25,6 +27,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   late PageController _pageController;
   final TransformationController _transformationController =
       TransformationController();
+  bool _isZoomed = false;
 
   @override
   void initState() {
@@ -45,6 +48,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   void _goToPrevious() {
     if (_currentIndex > 0) {
       _transformationController.value = Matrix4.identity();
+      _isZoomed = false;
       _pageController.previousPage(
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
@@ -55,6 +59,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   void _goToNext() {
     if (_currentIndex < widget.assets.length - 1) {
       _transformationController.value = Matrix4.identity();
+      _isZoomed = false;
       _pageController.nextPage(
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
@@ -109,25 +114,37 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
         body: PageView.builder(
           controller: _pageController,
           itemCount: widget.assets.length,
-          physics: _transformationController.value.isIdentity()
-              ? const PageScrollPhysics()
-              : const NeverScrollableScrollPhysics(),
+          physics: _isZoomed
+              ? const NeverScrollableScrollPhysics()
+              : const PageScrollPhysics(),
           onPageChanged: (index) {
             // Reset zoom when changing pages
             _transformationController.value = Matrix4.identity();
+            _isZoomed = false;
             setState(() {
               _currentIndex = index;
             });
           },
           itemBuilder: (context, index) {
             final asset = widget.assets[index];
-            return InteractiveViewer(
+            return SmoothInteractiveViewer(
               transformationController: _transformationController,
               minScale: 0.5,
               maxScale: 4.0,
-              onInteractionUpdate: (details) {
-                // Trigger rebuild to update PageView scroll physics
-                setState(() {});
+              onInteractionStart: () {
+                // Disable page swiping when zooming starts
+                setState(() {
+                  _isZoomed = true;
+                });
+              },
+              onInteractionEnd: () {
+                // Re-enable page swiping only if we're back to normal scale
+                final scale =
+                    _getScaleFromMatrix(_transformationController.value);
+                setState(() {
+                  _isZoomed = scale >
+                      1.01; // Small threshold for floating point precision
+                });
               },
               child: Container(
                 width: double.infinity,
@@ -273,5 +290,10 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     ];
 
     return '${months[date.month - 1]} ${date.day}, ${date.year} at ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  double _getScaleFromMatrix(Matrix4 matrix) {
+    return math.sqrt(
+        math.pow(matrix.entry(0, 0), 2) + math.pow(matrix.entry(1, 0), 2));
   }
 }

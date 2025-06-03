@@ -123,8 +123,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         final newVisibleIndex =
             (scrollRatio * _assets.length).floor().clamp(0, _assets.length - 1);
 
-        // If visible index has changed significantly, prioritize visible assets for download
-        if ((newVisibleIndex - _estimatedVisibleStartIndex).abs() > 10) {
+        // If visible index has changed, prioritize visible assets for download
+        // Reduced threshold for more frequent preloading
+        if ((newVisibleIndex - _estimatedVisibleStartIndex).abs() > 5) {
           _prioritizeVisibleAssets(newVisibleIndex);
         }
 
@@ -149,31 +150,57 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
     // Trigger memory cleanup periodically (only if we have content)
     if (_assets.isNotEmpty && position.hasContentDimensions) {
-      _performMemoryManagement();
+      // _performMemoryManagement();
     }
   }
 
   void _prioritizeVisibleAssets(int visibleIndex) {
     if (_assets.isEmpty) return;
 
-    // Calculate visible range (current view + some buffer)
+    // Preload 200 assets before and after current visible index
+    const int preloadBuffer = 200;
+
+    // Calculate visible range (current view + some immediate buffer for smooth scrolling)
     final columnCount = _getGridColumnCount(MediaQuery.of(context).size.width);
     final visibleRows = 10; // Approximate visible rows
-    final bufferRows = 5; // Extra rows to prioritize
+    final immediateBufferRows = 5; // Extra rows for immediate priority
 
-    final startIndex =
-        (visibleIndex - (bufferRows * columnCount)).clamp(0, _assets.length);
-    final endIndex = (visibleIndex + ((visibleRows + bufferRows) * columnCount))
-        .clamp(0, _assets.length);
+    // Immediate priority range (for smooth scrolling)
+    final immediateStartIndex =
+        (visibleIndex - (immediateBufferRows * columnCount))
+            .clamp(0, _assets.length);
+    final immediateEndIndex =
+        (visibleIndex + ((visibleRows + immediateBufferRows) * columnCount))
+            .clamp(0, _assets.length);
 
-    final visibleAssets = _assets.sublist(startIndex, endIndex);
-    final visibleAssetIds = visibleAssets.map((asset) => asset.id).toList();
+    // Extended preload range (200 assets before and after)
+    final preloadStartIndex =
+        (visibleIndex - preloadBuffer).clamp(0, _assets.length);
+    final preloadEndIndex =
+        (visibleIndex + preloadBuffer).clamp(0, _assets.length);
 
-    if (visibleAssetIds.isNotEmpty) {
+    // Get immediate priority assets (for current viewport)
+    final immediateAssets =
+        _assets.sublist(immediateStartIndex, immediateEndIndex);
+    final immediateAssetIds = immediateAssets.map((asset) => asset.id).toList();
+
+    // Get extended preload assets
+    final preloadAssets = _assets.sublist(preloadStartIndex, preloadEndIndex);
+    final preloadAssetIds = preloadAssets.map((asset) => asset.id).toList();
+
+    if (immediateAssetIds.isNotEmpty) {
       print(
-          '⚡ Prioritizing ${visibleAssetIds.length} visible assets for download');
+          '⚡ Prioritizing ${immediateAssetIds.length} immediate assets for download (index $immediateStartIndex-$immediateEndIndex)');
       _backgroundThumbnailService.prioritizeAssets(
-          visibleAssetIds, widget.apiService);
+          immediateAssetIds, widget.apiService);
+    }
+
+    if (preloadAssetIds.isNotEmpty) {
+      print(
+          '📥 Preloading ${preloadAssetIds.length} thumbnails for range $preloadStartIndex-$preloadEndIndex (±$preloadBuffer from index $visibleIndex)');
+      // Start background download for the extended range
+      _backgroundThumbnailService.startBackgroundDownload(
+          preloadAssets, widget.apiService);
     }
   }
 
@@ -335,6 +362,10 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             '🚀 Starting background thumbnail downloads for ${assets.length} assets');
         _backgroundThumbnailService.startBackgroundDownload(
             assets, widget.apiService);
+
+        // Also start initial preloading from the beginning of the list
+        print('📥 Starting initial preloading from index 0');
+        _prioritizeVisibleAssets(0);
       }
     } catch (e) {
       setState(() {
@@ -442,6 +473,12 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             '🚀 Starting background thumbnail downloads for ${allNewAssets.length} new assets');
         _backgroundThumbnailService.startBackgroundDownload(
             allNewAssets, widget.apiService);
+
+        // Also trigger preloading around the area where new assets were added
+        final newAssetsStartIndex = _assets.length - allNewAssets.length;
+        print(
+            '📥 Starting preloading around newly loaded assets at index $newAssetsStartIndex');
+        _prioritizeVisibleAssets(newAssetsStartIndex);
       }
 
       print(
