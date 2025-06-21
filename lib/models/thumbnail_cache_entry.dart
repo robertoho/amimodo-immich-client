@@ -20,27 +20,34 @@ class ThumbnailCacheEntry extends HiveObject {
   @HiveField(4)
   late int accessCount;
 
+  @HiveField(5)
+  late DateTime? assetModifiedAt;
+
   ThumbnailCacheEntry({
     required this.url,
     required this.imageData,
     required this.cachedAt,
     required this.lastAccessedAt,
     this.accessCount = 1,
+    this.assetModifiedAt,
   });
 
-  // Update access tracking
+  // Method to check if cache entry is expired
+  bool isExpired(Duration maxAge) {
+    return DateTime.now().difference(cachedAt) > maxAge;
+  }
+
+  // Mark as accessed to support LRU
   void markAccessed() {
     lastAccessedAt = DateTime.now();
     accessCount++;
-    // Note: Don't auto-save here as the object might not be attached to box
-    // The service will handle saving when needed
   }
 
-  // Check if cache entry is expired
-  bool isExpired(Duration expiry) {
-    return DateTime.now().difference(cachedAt) > expiry;
-  }
+  // Get size of entry in bytes
+  int get sizeInBytes => imageData.lengthInBytes;
 
-  // Get cache entry size in bytes
-  int get sizeInBytes => imageData.length;
+  @override
+  String toString() {
+    return 'ThumbnailCacheEntry(url: $url, cachedAt: $cachedAt, lastAccessed: $lastAccessedAt, accessCount: $accessCount, size: $sizeInBytes, assetModifiedAt: $assetModifiedAt)';
+  }
 }

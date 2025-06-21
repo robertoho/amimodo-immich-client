@@ -5,10 +5,12 @@ import '../models/immich_album.dart';
 import '../models/immich_asset.dart';
 import '../services/immich_api_service.dart';
 import '../services/grid_scale_service.dart';
+import '../services/background_thumbnail_service.dart';
 import '../widgets/photo_grid_item.dart';
 import '../widgets/pinch_zoom_grid.dart';
 import '../widgets/section_header.dart';
 import '../utils/date_utils.dart';
+import 'dart:async';
 
 class AlbumDetailScreen extends StatefulWidget {
   final ImmichAlbum album;
@@ -26,8 +28,13 @@ class AlbumDetailScreen extends StatefulWidget {
   State<AlbumDetailScreen> createState() => _AlbumDetailScreenState();
 }
 
-class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
+class _AlbumDetailScreenState extends State<AlbumDetailScreen>
+    with WidgetsBindingObserver {
   final GridScaleService _gridScaleService = GridScaleService();
+  final BackgroundThumbnailService _backgroundThumbnailService =
+      BackgroundThumbnailService();
+  final ScrollController _scrollController = ScrollController();
+
   List<ImmichAsset> _assets = [];
   bool _isLoading = true;
   bool _hasError = false;
@@ -56,17 +63,95 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
   // Path-based selection state
   String? _lastSelectedAssetId;
 
+  // Scroll and thumbnail prioritization
+  int _estimatedVisibleStartIndex = 0;
+  Timer? _scrollStopTimer;
+  static const Duration _scrollStopDelay = Duration(seconds: 2);
+
   @override
   void initState() {
     super.initState();
     _loadAlbumAssets();
     _gridScaleService.addListener(_onGridScaleChanged);
+    _scrollController.addListener(_scrollListener);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
     _gridScaleService.removeListener(_onGridScaleChanged);
+    _scrollController.dispose();
+    _scrollStopTimer?.cancel();
+    _backgroundThumbnailService.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _backgroundThumbnailService.onAppForeground();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _backgroundThumbnailService.onAppBackground();
+        break;
+    }
+  }
+
+  void _scrollListener() {
+    final position = _scrollController.position;
+
+    // Estimate current visible index based on scroll position
+    if (_assets.isNotEmpty && position.hasContentDimensions) {
+      final maxScrollWithViewport =
+          position.maxScrollExtent + position.viewportDimension;
+      if (maxScrollWithViewport > 0) {
+        final scrollRatio = position.pixels / maxScrollWithViewport;
+        final newVisibleIndex =
+            (scrollRatio * _assets.length).floor().clamp(0, _assets.length - 1);
+
+        // If visible index has changed significantly, prioritize visible assets
+        if ((newVisibleIndex - _estimatedVisibleStartIndex).abs() > 10) {
+          _prioritizeVisibleAssets(newVisibleIndex);
+        }
+
+        _estimatedVisibleStartIndex = newVisibleIndex;
+        _resetScrollStopTimer();
+      }
+    }
+  }
+
+  void _resetScrollStopTimer() {
+    _backgroundThumbnailService.notifyAppIsBusy();
+    _scrollStopTimer?.cancel();
+    _scrollStopTimer = Timer(_scrollStopDelay, _onScrollStopped);
+  }
+
+  void _onScrollStopped() {
+    _backgroundThumbnailService.notifyAppIsIdle(widget.apiService);
+  }
+
+  void _prioritizeVisibleAssets(int visibleIndex) {
+    if (_assets.isEmpty) return;
+
+    // Prioritize assets around the visible area
+    const int priorityBuffer = 30;
+    final startIndex = (visibleIndex - priorityBuffer).clamp(0, _assets.length);
+    final endIndex = (visibleIndex + priorityBuffer).clamp(0, _assets.length);
+
+    final visibleAssets = _assets.sublist(startIndex, endIndex);
+    final assetIds = visibleAssets.map((asset) => asset.id).toList();
+
+    if (assetIds.isNotEmpty) {
+      debugPrint(
+          '⚡ Prioritizing ${assetIds.length} album thumbnails around index $visibleIndex');
+      _backgroundThumbnailService.prioritizeAssets(assetIds, widget.apiService);
+    }
   }
 
   void _onGridScaleChanged() {
@@ -92,24 +177,43 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
 
     try {
       final assets = await widget.apiService.getAlbumAssets(widget.album.id);
-      setState(() {
-        _assets = assets;
-        _isLoading = false;
+      if (mounted) {
+        setState(() {
+          _assets = assets;
+          _isLoading = false;
 
-        // Generate grouped items if grouping is enabled
-        if (_groupByMonth && assets.isNotEmpty) {
-          final groupedAssets = PhotoDateUtils.groupAssetsByMonth(assets);
-          _groupedItems = PhotoDateUtils.createGroupedGridItems(groupedAssets);
-        } else {
-          _groupedItems = [];
+          // Generate grouped items if grouping is enabled
+          if (_groupByMonth && assets.isNotEmpty) {
+            final groupedAssets = PhotoDateUtils.groupAssetsByMonth(assets);
+            _groupedItems =
+                PhotoDateUtils.createGroupedGridItems(groupedAssets);
+          } else {
+            _groupedItems = [];
+          }
+        });
+
+        // Prioritize initial visible thumbnails
+        if (assets.isNotEmpty) {
+          final initialAssets = assets.take(50).toList(); // First 50 assets
+          final assetIds = initialAssets.map((asset) => asset.id).toList();
+          debugPrint(
+              '🚀 Prioritizing ${assetIds.length} initial album thumbnails');
+          _backgroundThumbnailService.prioritizeAssets(
+              assetIds, widget.apiService);
+
+          // Also start background download for all album assets
+          _backgroundThumbnailService.startBackgroundDownload(
+              assets, widget.apiService);
         }
-      });
+      }
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-        _errorMessage = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+          _errorMessage = e.toString();
+        });
+      }
     }
   }
 
@@ -628,6 +732,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                     final columnCount =
                         _getGridColumnCount(constraints.maxWidth);
                     return CustomScrollView(
+                      controller: _scrollController,
                       physics: _isSelectionMode
                           ? const NeverScrollableScrollPhysics()
                           : null,

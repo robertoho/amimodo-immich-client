@@ -25,7 +25,8 @@ class MetadataSearchScreen extends StatefulWidget {
   State<MetadataSearchScreen> createState() => _MetadataSearchScreenState();
 }
 
-class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
+class _MetadataSearchScreenState extends State<MetadataSearchScreen>
+    with WidgetsBindingObserver {
   final GridScaleService _gridScaleService = GridScaleService();
   final BackgroundThumbnailService _backgroundThumbnailService =
       BackgroundThumbnailService();
@@ -102,6 +103,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     super.initState();
     _scrollController.addListener(_scrollListener);
     _gridScaleService.addListener(_onGridScaleChanged);
+    WidgetsBinding.instance.addObserver(this);
 
     // Perform initial search without filters when page loads
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -119,8 +121,25 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     _selectedCountNotifier.dispose();
     _scrollStopTimer?.cancel(); // Cancel scroll stop timer
     _faceSearchController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
 
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _backgroundThumbnailService.onAppForeground();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _backgroundThumbnailService.onAppBackground();
+        break;
+    }
   }
 
   void _onGridScaleChanged() {
@@ -196,12 +215,16 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
 
   /// Reset the scroll stop timer - called when user is actively scrolling
   void _resetScrollStopTimer() {
+    _backgroundThumbnailService.notifyAppIsBusy();
     _scrollStopTimer?.cancel();
     _scrollStopTimer = Timer(_scrollStopDelay, _onScrollStopped);
   }
 
   /// Called when scrolling has stopped for the specified delay
   void _onScrollStopped() {
+    // Notify service that app is now idle
+    _backgroundThumbnailService.notifyAppIsIdle(widget.apiService);
+
     // Calculate the global preload starting index based on current position
     final globalStartIndex =
         _assetsRemovedFromStart + _estimatedVisibleStartIndex;

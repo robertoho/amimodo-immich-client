@@ -73,6 +73,39 @@ class ThumbnailCacheService {
     return false;
   }
 
+  /// Check if a thumbnail is cached and up-to-date
+  Future<bool> isCachedAndUpToDate(String url, DateTime modifiedAt) async {
+    if (_cacheBox == null) {
+      await initialize();
+      if (_cacheBox == null) return false;
+    }
+
+    final cacheKey = _getCacheKey(url);
+
+    // Check memory cache first
+    if (_memoryCache.containsKey(cacheKey)) {
+      final entry = _memoryCache[cacheKey]!;
+      if (!entry.isExpired(_cacheExpiry) &&
+          entry.assetModifiedAt != null &&
+          entry.assetModifiedAt!.isAtSameMomentAs(modifiedAt)) {
+        return true;
+      }
+    }
+
+    // Check Hive cache
+    final entry = _cacheBox!.get(cacheKey);
+    if (entry != null &&
+        !entry.isExpired(_cacheExpiry) &&
+        entry.assetModifiedAt != null &&
+        entry.assetModifiedAt!.isAtSameMomentAs(modifiedAt)) {
+      // Add to memory cache for faster access
+      _memoryCache[cacheKey] = entry;
+      return true;
+    }
+
+    return false;
+  }
+
   // Get cached thumbnail
   Future<Uint8List?> getCachedThumbnail(String url) async {
     if (_cacheBox == null) {
@@ -117,7 +150,7 @@ class ThumbnailCacheService {
 
   // Download and cache thumbnail
   Future<Uint8List?> downloadAndCacheThumbnail(
-      String url, Map<String, String>? headers) async {
+      String url, Map<String, String>? headers, DateTime modifiedAt) async {
     if (_cacheBox == null) {
       await initialize();
       if (_cacheBox == null) return null;
@@ -128,10 +161,11 @@ class ThumbnailCacheService {
 
       if (response.statusCode == 200) {
         final bytes = response.bodyBytes;
-        await _cacheThumbnail(url, bytes);
+        await _cacheThumbnail(url, bytes, modifiedAt);
         return bytes;
       } else {
-        debugPrint('❌ Failed to download thumbnail: ${response.statusCode}');
+        debugPrint(
+            '❌ Failed to download thumbnail: ${response.statusCode} - URL: $url');
         return null;
       }
     } catch (e) {
@@ -141,7 +175,8 @@ class ThumbnailCacheService {
   }
 
   // Cache thumbnail data
-  Future<void> _cacheThumbnail(String url, Uint8List bytes) async {
+  Future<void> _cacheThumbnail(
+      String url, Uint8List bytes, DateTime modifiedAt) async {
     if (_cacheBox == null) return;
 
     final cacheKey = _getCacheKey(url);
@@ -154,6 +189,7 @@ class ThumbnailCacheService {
         cachedAt: now,
         lastAccessedAt: now,
         accessCount: 1,
+        assetModifiedAt: modifiedAt,
       );
 
       await _cacheBox!.put(cacheKey, entry);
@@ -320,7 +356,7 @@ class ThumbnailCacheService {
 
     for (final url in urls) {
       if (!await isCached(url)) {
-        futures.add(downloadAndCacheThumbnail(url, headers));
+        futures.add(downloadAndCacheThumbnail(url, headers, DateTime.now()));
       }
 
       // Limit concurrent downloads to avoid overwhelming the system

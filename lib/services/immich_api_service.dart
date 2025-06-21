@@ -662,4 +662,23 @@ class ImmichApiService {
     if (!isConfigured) return '';
     return '$baseUrl/api/people/$personId/thumbnail';
   }
+
+  Future<ImmichAsset?> getAssetDetails(String assetId) async {
+    if (!isConfigured) return null;
+
+    final uri = Uri.parse('$baseUrl/api/assets/$assetId');
+
+    try {
+      final response = await http.get(uri, headers: _headers);
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> responseData = json.decode(response.body);
+        return ImmichAsset.fromJson(responseData);
+      } else {
+        return null;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
 }

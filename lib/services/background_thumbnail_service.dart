@@ -27,6 +27,9 @@ class BackgroundThumbnailService {
   bool _isRunning = false;
   bool _shouldStop = false;
   bool _isFullPreloadRunning = false;
+  bool _isAppInForeground = true;
+  bool _isIdle = true;
+  Timer? _autoPreloadTimer;
 
   // Full preload state
   int _totalAssetsDiscovered = 0;
@@ -35,16 +38,93 @@ class BackgroundThumbnailService {
   int _totalAlreadyCached = 0; // Track assets already in cache
 
   // Configuration
-  static const int _maxConcurrentDownloads = 3;
+  static const int _maxConcurrentDownloads = 30; // Reduced for background
   static const int _batchSize = 10;
   static const Duration _downloadDelay = Duration(milliseconds: 100);
   static const int _pageSize = 200; // Assets per page for full preload
+  static const Duration _idleDelay = Duration(seconds: 2); // Time to wait
 
   // Streams for monitoring progress
   final StreamController<BackgroundDownloadStatus> _statusController =
       StreamController<BackgroundDownloadStatus>.broadcast();
 
   Stream<BackgroundDownloadStatus> get statusStream => _statusController.stream;
+
+  // Method to be called when app goes to background
+  void onAppBackground() {
+    _isAppInForeground = false;
+    pauseIdlePreload();
+    debugPrint('App in background, pausing idle preload');
+  }
+
+  // Method to be called when app comes to foreground
+  void onAppForeground() {
+    _isAppInForeground = true;
+    resumeIdlePreload();
+    debugPrint('App in foreground, resuming idle preload');
+  }
+
+  /// Call this when user starts an activity (scrolling, searching)
+  void notifyAppIsBusy() {
+    _isIdle = false;
+    cancelIdlePreloadTimer(); // Cancel any pending timer
+    if (_isFullPreloadRunning) {
+      pauseIdlePreload();
+      debugPrint('App is busy, pausing ongoing idle preload');
+    }
+  }
+
+  /// Call this when user activity stops
+  void notifyAppIsIdle(ImmichApiService apiService) {
+    _isIdle = true;
+    if (_isFullPreloadRunning) {
+      resumeIdlePreload();
+      debugPrint('App is idle, resuming ongoing preload');
+    } else {
+      // If no preload is running, start a timer to begin one
+      startIdlePreloadTimer(apiService);
+    }
+  }
+
+  /// Start a timer to begin full preload if app remains idle
+  void startIdlePreloadTimer(ImmichApiService apiService) {
+    cancelIdlePreloadTimer(); // Ensure no other timer is running
+    if (!_isAppInForeground || _isFullPreloadRunning) return;
+
+    debugPrint('Starting idle timer for full preload...');
+    _autoPreloadTimer = Timer(_idleDelay, () {
+      if (_isIdle && _isAppInForeground && !_isFullPreloadRunning) {
+        debugPrint('Idle timer expired, starting full preload automatically');
+        // Start a full preload with default filters
+        startFullPreload(apiService);
+      }
+    });
+  }
+
+  /// Cancel the idle preload timer
+  void cancelIdlePreloadTimer() {
+    if (_autoPreloadTimer?.isActive ?? false) {
+      _autoPreloadTimer!.cancel();
+      debugPrint('Cancelled idle preload timer');
+    }
+  }
+
+  /// Pause the idle preload process
+  void pauseIdlePreload() {
+    if (_isFullPreloadRunning) {
+      _shouldStop = true;
+      debugPrint('Pausing idle preload');
+    }
+  }
+
+  /// Resume the idle preload process
+  void resumeIdlePreload() {
+    if (_isFullPreloadRunning) {
+      _shouldStop = false;
+      debugPrint('Resuming idle preload');
+      // Here you might need to re-trigger the download loop if it was fully stopped
+    }
+  }
 
   /// Initialize the service and restore cached thumbnail count
   Future<void> initialize() async {
@@ -85,6 +165,7 @@ class BackgroundThumbnailService {
     String? model,
     String? sortOrder,
     List<String>? personIds,
+    bool autoStart = true, // To control if preload starts immediately
   }) async {
     if (_isFullPreloadRunning) {
       debugPrint('🔄 Full preload already running');
@@ -93,6 +174,13 @@ class BackgroundThumbnailService {
 
     if (!apiService.isConfigured) {
       debugPrint('❌ API service not configured, cannot start full preload');
+      return;
+    }
+
+    if (!autoStart) {
+      debugPrint('Preload configured but not auto-started. Waiting for idle.');
+      // Update status to show that a preload is pending
+      _updateStatus();
       return;
     }
 
@@ -164,9 +252,14 @@ class BackgroundThumbnailService {
           await _processSinglePage(apiService, startPage, searchParams);
       if (result != null) {
         processedPages.add(startPage);
-        totalAssetsProcessed += result['assetsCount']!;
-        totalCachedAssets += result['cached']!;
+        totalAssetsProcessed += result['assetsCount'] as int;
+        totalCachedAssets += result['cached'] as int;
         _totalPagesDiscovered = 1;
+
+        // Start download for this page's assets
+        if (result['assets'] != null) {
+          await startBackgroundDownload(result['assets']!, apiService);
+        }
       }
     }
 
@@ -219,14 +312,19 @@ class BackgroundThumbnailService {
           await _processSinglePage(apiService, currentPage, searchParams);
       if (result != null) {
         processedPages.add(currentPage);
-        totalAssetsProcessed += result['assetsCount']!;
-        totalCachedAssets += result['cached']!;
+        totalAssetsProcessed += result['assetsCount'] as int;
+        totalCachedAssets += result['cached'] as int;
         _totalPagesDiscovered = processedPages.length;
 
         // Update status
         _totalAssetsDiscovered = totalAssetsProcessed;
         _totalAlreadyCached = totalCachedAssets;
         _updateStatus();
+
+        // Start download for this page's assets
+        if (result['assets'] != null) {
+          await startBackgroundDownload(result['assets']!, apiService);
+        }
 
         // Check if this direction still has data
         if (isForward && result['assetsCount']! < _pageSize) {
@@ -255,20 +353,17 @@ class BackgroundThumbnailService {
         '📊 Processing complete: $totalAssetsProcessed total assets, $totalCachedAssets already cached, $assetsToDownload downloaded');
   }
 
-  /// Process a single page and return stats
-  Future<Map<String, int>?> _processSinglePage(
+  /// Process a single page of assets and return statistics
+  Future<Map<String, dynamic>?> _processSinglePage(
     ImmichApiService apiService,
     int page,
     Map<String, dynamic> searchParams,
   ) async {
-    _currentPage = page;
-    debugPrint('🔍 Processing page $page...');
-
     try {
+      // Use the searchMetadata endpoint for more flexible filtering
       final searchResult = await apiService.searchMetadata(
         page: page,
         size: _pageSize,
-        order: searchParams['sortOrder'],
         isFavorite: searchParams['isFavorite'],
         isOffline: searchParams['isOffline'],
         isTrashed: searchParams['isTrashed'],
@@ -280,7 +375,7 @@ class BackgroundThumbnailService {
         country: searchParams['country'],
         make: searchParams['make'],
         model: searchParams['model'],
-        personIds: searchParams['personIds'] as List<String>?,
+        personIds: searchParams['personIds'],
       );
 
       List<dynamic> jsonList;
@@ -296,65 +391,39 @@ class BackgroundThumbnailService {
       final pageAssets =
           jsonList.map((json) => ImmichAsset.fromJson(json)).toList();
 
-      if (pageAssets.isEmpty) {
-        debugPrint('📄 Page $page: No assets found');
+      if (pageAssets.isEmpty && page > 1) {
+        // No more assets to fetch
         return null;
       }
 
-      // Check cache status and queue uncached assets for immediate download
-      final cacheStats = await _processPageAssets(pageAssets, apiService);
+      _currentPage = page;
+
+      final assetsToDownload = <ImmichAsset>[];
+      int alreadyCachedCount = 0;
+
+      // Check each asset for caching status
+      for (final asset in pageAssets) {
+        final thumbnailUrl = apiService.getThumbnailUrl(asset.id);
+        if (await _cacheService.isCachedAndUpToDate(
+            thumbnailUrl, asset.modifiedAt)) {
+          alreadyCachedCount++;
+        } else {
+          assetsToDownload.add(asset);
+        }
+      }
 
       debugPrint(
-          '📄 Page $page: ${pageAssets.length} assets, ${cacheStats['cached']} cached, ${cacheStats['queued']} queued for download');
-
-      // Download thumbnails for this page immediately
-      if ((cacheStats['queued'] ?? 0) > 0) {
-        await _downloadQueuedAssets(apiService);
-      }
+          '📄 Page $page: Found ${pageAssets.length} assets, $alreadyCachedCount already cached, ${assetsToDownload.length} to download');
 
       return {
         'assetsCount': pageAssets.length,
-        'cached': cacheStats['cached']!,
-        'queued': cacheStats['queued']!,
+        'cached': alreadyCachedCount,
+        'assets': assetsToDownload, // Return assets to be queued
       };
     } catch (e) {
       debugPrint('❌ Error processing page $page: $e');
       return null;
     }
-  }
-
-  /// Process assets from a single page, checking cache and queuing uncached ones
-  Future<Map<String, int>> _processPageAssets(
-    List<ImmichAsset> assets,
-    ImmichApiService apiService,
-  ) async {
-    int cached = 0;
-    int queued = 0;
-
-    for (final asset in assets) {
-      if (_shouldStop) break;
-
-      final thumbnailUrl = apiService.getThumbnailUrl(asset.id);
-
-      // Check if already cached in database
-      if (await _cacheService.isCached(thumbnailUrl)) {
-        cached++;
-        continue;
-      }
-
-      // Check if already in our tracking (avoid duplicates)
-      if (_downloadQueue.contains(asset.id) ||
-          _downloading.contains(asset.id) ||
-          _downloadedAssets.contains(asset.id)) {
-        continue;
-      }
-
-      // Add to download queue for this page
-      _downloadQueue.add(asset.id);
-      queued++;
-    }
-
-    return {'cached': cached, 'queued': queued};
   }
 
   /// Download all currently queued assets and wait for completion
@@ -428,97 +497,82 @@ class BackgroundThumbnailService {
     _isRunning = true;
     _shouldStop = false;
 
-    debugPrint('🚀 Starting background thumbnail download worker');
+    debugPrint('🚀 Started download worker');
+    _updateStatus();
 
-    // Run the download worker in a separate isolate or async operation
-    _downloadWorkerLoop(apiService);
-  }
-
-  Future<void> _downloadWorkerLoop(ImmichApiService apiService) async {
-    while (_isRunning && !_shouldStop && _downloadQueue.isNotEmpty) {
-      // Take a batch of assets to download
-      final batch = _downloadQueue.take(_batchSize).toList();
-      _downloadQueue.removeAll(batch);
-      _downloading.addAll(batch);
-
-      debugPrint('🔄 Processing batch of ${batch.length} thumbnails');
-
-      // Download batch concurrently with limited concurrency
-      final futures = <Future>[];
-      final semaphore = Semaphore(_maxConcurrentDownloads);
-
-      for (final assetId in batch) {
-        futures.add(_downloadSingleThumbnail(assetId, apiService, semaphore));
-      }
-
-      await Future.wait(futures);
-
-      // Remove from downloading set and add to completed
-      _downloading.removeAll(batch);
-      _downloadedAssets.addAll(batch);
-
-      // Refresh cached count to reflect new downloads in database
-      await _refreshCachedCount();
-
-      _updateStatus();
-
-      // Small delay to prevent overwhelming the system
-      if (_downloadQueue.isNotEmpty) {
-        await Future.delayed(_downloadDelay);
-      }
+    // Create worker pool
+    final workers = <Future<void>>[];
+    for (int i = 0; i < _maxConcurrentDownloads; i++) {
+      workers.add(_downloadWorker(apiService));
     }
 
-    _isRunning = false;
-    debugPrint('✅ Background thumbnail download worker completed');
+    // Wait for all workers to finish
+    Future.wait(workers).then((_) {
+      _isRunning = false;
+      debugPrint('🏁 All download workers finished');
 
-    // Final refresh of cached count
-    await _refreshCachedCount();
-    _updateStatus();
+      // If there are still items in the queue, restart the worker
+      // This can happen if items were added while workers were running
+      if (_downloadQueue.isNotEmpty && !_shouldStop) {
+        debugPrint('Restarting download worker for remaining items...');
+        _startDownloadWorker(apiService);
+      } else {
+        _updateStatus();
+      }
+    });
   }
 
-  Future<void> _downloadSingleThumbnail(
-    String assetId,
-    ImmichApiService apiService,
-    Semaphore semaphore,
-  ) async {
-    await semaphore.acquire();
+  // The worker task
+  Future<void> _downloadWorker(ImmichApiService apiService) async {
+    while (_downloadQueue.isNotEmpty && !_shouldStop) {
+      final assetId = _downloadQueue.first;
+      _downloadQueue.remove(assetId);
 
-    try {
-      final thumbnailUrl = apiService.getThumbnailUrl(assetId);
-      final fallbackUrl = apiService.getThumbnailUrlFallback(assetId);
-
-      // Check if already cached (could have been cached by UI thread)
-      if (await _cacheService.isCached(thumbnailUrl)) {
-        debugPrint('✅ Thumbnail already cached for asset $assetId');
-        return;
+      // Check again before downloading
+      if (_downloading.contains(assetId) ||
+          _downloadedAssets.contains(assetId)) {
+        continue;
       }
 
-      // Download and cache the thumbnail
-      final bytes = await _cacheService.downloadAndCacheThumbnail(
-        thumbnailUrl,
-        apiService.authHeaders,
-      );
+      // TODO: This is inefficient as we refetch asset info.
+      // We should ideally pass the full ImmichAsset object to the queue.
+      // For now, we'll have to fetch asset details.
+      // This part needs optimization later.
+      final asset = await apiService.getAssetDetails(assetId);
 
-      if (bytes != null) {
-        //   debugPrint('✅ Successfully downloaded thumbnail for asset $assetId');
-      } else {
-        // Try fallback URL
-        final fallbackBytes = await _cacheService.downloadAndCacheThumbnail(
-          fallbackUrl,
-          apiService.authHeaders,
+      if (asset == null) {
+        debugPrint('❌ Could not find asset details for ID: $assetId');
+        continue;
+      }
+
+      _downloading.add(assetId);
+      _updateStatus();
+
+      final thumbnailUrl = apiService.getThumbnailUrl(assetId);
+      final headers = apiService.authHeaders;
+
+      try {
+        final thumbnailData = await _cacheService.downloadAndCacheThumbnail(
+          thumbnailUrl,
+          headers,
+          asset.modifiedAt,
         );
 
-        if (fallbackBytes != null) {
-          //    debugPrint(
-          //      '✅ Successfully downloaded fallback thumbnail for asset $assetId');
+        if (thumbnailData != null) {
+          _downloadedAssets.add(assetId);
+          debugPrint('✅ Downloaded thumbnail for asset $assetId');
         } else {
-          debugPrint('❌ Failed to download thumbnail for asset $assetId');
+          debugPrint('⚠️ Failed to download thumbnail for asset $assetId');
         }
+      } catch (e) {
+        debugPrint('❌ Error downloading thumbnail for $assetId: $e');
+        // Optional: Add back to queue for retry?
+      } finally {
+        _downloading.remove(assetId);
+        _updateStatus();
       }
-    } catch (e) {
-      debugPrint('❌ Error downloading thumbnail for asset $assetId: $e');
-    } finally {
-      semaphore.release();
+
+      await Future.delayed(_downloadDelay);
     }
   }
 
@@ -594,7 +648,9 @@ class BackgroundThumbnailService {
   }
 
   void _updateStatus() {
-    _statusController.add(currentStatus);
+    if (!_statusController.isClosed) {
+      _statusController.add(currentStatus);
+    }
   }
 
   /// Check if a specific asset thumbnail is available locally
@@ -617,8 +673,12 @@ class BackgroundThumbnailService {
     final priorityAssets = <String>[];
 
     for (final assetId in assetIds) {
+      final asset = await apiService.getAssetDetails(assetId);
+      if (asset == null) continue;
+
       final thumbnailUrl = apiService.getThumbnailUrl(assetId);
-      if (!await _cacheService.isCached(thumbnailUrl) &&
+      if (!await _cacheService.isCachedAndUpToDate(
+              thumbnailUrl, asset.modifiedAt) &&
           !_downloading.contains(assetId)) {
         priorityAssets.add(assetId);
       }
@@ -641,6 +701,7 @@ class BackgroundThumbnailService {
 
   void dispose() {
     _shouldStop = true;
+    _autoPreloadTimer?.cancel();
     _statusController.close();
   }
 }
@@ -699,34 +760,5 @@ class BackgroundDownloadStatus {
   @override
   String toString() {
     return 'BackgroundDownloadStatus(running: $isRunning, queue: $queueSize, downloading: $downloading, completed: $completed, paused: $isPaused, fullPreload: $isFullPreloadRunning, totalDiscovered: $totalAssetsDiscovered, cached: $totalAlreadyCached, page: $currentPage/$totalPagesDiscovered)';
-  }
-}
-
-/// Simple semaphore implementation for controlling concurrency
-class Semaphore {
-  final int maxCount;
-  int _currentCount;
-  final Queue<Completer<void>> _waitQueue = Queue<Completer<void>>();
-
-  Semaphore(this.maxCount) : _currentCount = maxCount;
-
-  Future<void> acquire() async {
-    if (_currentCount > 0) {
-      _currentCount--;
-      return;
-    }
-
-    final completer = Completer<void>();
-    _waitQueue.add(completer);
-    return completer.future;
-  }
-
-  void release() {
-    if (_waitQueue.isNotEmpty) {
-      final completer = _waitQueue.removeFirst();
-      completer.complete();
-    } else {
-      _currentCount++;
-    }
   }
 }

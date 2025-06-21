@@ -22,13 +22,14 @@ class ThumbnailCacheEntryAdapter extends TypeAdapter<ThumbnailCacheEntry> {
       cachedAt: fields[2] as DateTime,
       lastAccessedAt: fields[3] as DateTime,
       accessCount: fields[4] as int,
+      assetModifiedAt: fields[5] as DateTime?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ThumbnailCacheEntry obj) {
     writer
-      ..writeByte(5)
+      ..writeByte(6)
       ..writeByte(0)
       ..write(obj.url)
       ..writeByte(1)
@@ -38,7 +39,9 @@ class ThumbnailCacheEntryAdapter extends TypeAdapter<ThumbnailCacheEntry> {
       ..writeByte(3)
       ..write(obj.lastAccessedAt)
       ..writeByte(4)
-      ..write(obj.accessCount);
+      ..write(obj.accessCount)
+      ..writeByte(5)
+      ..write(obj.assetModifiedAt);
   }
 
   @override

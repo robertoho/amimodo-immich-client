@@ -73,6 +73,7 @@ class _CachedThumbnailImageState extends State<CachedThumbnailImage> {
       final downloadedBytes = await _cacheService.downloadAndCacheThumbnail(
         widget.imageUrl,
         widget.headers,
+        DateTime.now(),
       );
 
       if (downloadedBytes != null && mounted) {
@@ -89,6 +90,7 @@ class _CachedThumbnailImageState extends State<CachedThumbnailImage> {
         final fallbackBytes = await _cacheService.downloadAndCacheThumbnail(
           widget.fallbackUrl!,
           widget.headers,
+          DateTime.now(),
         );
 
         if (fallbackBytes != null && mounted) {
