@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'account_manager.dart';
 import '../models/immich_asset.dart';
 import '../models/immich_album.dart';
+import '../models/immich_person.dart';
 
 class ImmichApiService {
   final AccountManager _accountManager = AccountManager();
@@ -383,7 +384,6 @@ class ImmichApiService {
     bool? withExif = false,
     bool? withPeople = false,
     List<String>? personIds,
-    List<String>? tagIds,
   }) async {
     if (!isConfigured) {
       throw Exception('API not configured. Please set base URL and API key.');
@@ -425,9 +425,9 @@ class ImmichApiService {
       if (lensModel != null) requestBody['lensModel'] = lensModel;
       if (withExif != null) requestBody['withExif'] = withExif;
       if (withPeople != null) requestBody['withPeople'] = withPeople;
-      if (personIds != null && personIds.isNotEmpty)
+      if (personIds != null && personIds.isNotEmpty) {
         requestBody['personIds'] = personIds;
-      if (tagIds != null && tagIds.isNotEmpty) requestBody['tagIds'] = tagIds;
+      }
 
       print('🔍 SearchMetadata request: ${json.encode(requestBody)}');
 
@@ -633,5 +633,33 @@ class ImmichApiService {
     } catch (e) {
       throw Exception('Error fetching asset info from $uri: $e');
     }
+  }
+
+  Future<List<ImmichPerson>> getAllPeople() async {
+    if (!isConfigured) {
+      throw Exception('API not configured. Please set base URL and API key.');
+    }
+
+    final uri = Uri.parse('$baseUrl/api/people');
+
+    try {
+      final response = await http.get(uri, headers: _headers);
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> responseData = json.decode(response.body);
+        final List<dynamic> peopleList = responseData['people'] ?? [];
+        return peopleList.map((json) => ImmichPerson.fromJson(json)).toList();
+      } else {
+        throw Exception(
+            'Failed to get people from $uri: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      throw Exception('Error getting people from $uri: $e');
+    }
+  }
+
+  String getPersonThumbnailUrl(String personId) {
+    if (!isConfigured) return '';
+    return '$baseUrl/api/people/$personId/thumbnail';
   }
 }

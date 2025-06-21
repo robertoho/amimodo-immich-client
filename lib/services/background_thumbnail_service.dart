@@ -83,7 +83,8 @@ class BackgroundThumbnailService {
     String? country,
     String? make,
     String? model,
-    String sortOrder = 'desc',
+    String? sortOrder,
+    List<String>? personIds,
   }) async {
     if (_isFullPreloadRunning) {
       debugPrint('🔄 Full preload already running');
@@ -127,6 +128,7 @@ class BackgroundThumbnailService {
         'make': make,
         'model': model,
         'sortOrder': sortOrder,
+        'personIds': personIds,
       });
     } catch (e) {
       debugPrint('❌ Error during full preload: $e');
@@ -278,6 +280,7 @@ class BackgroundThumbnailService {
         country: searchParams['country'],
         make: searchParams['make'],
         model: searchParams['model'],
+        personIds: searchParams['personIds'] as List<String>?,
       );
 
       List<dynamic> jsonList;

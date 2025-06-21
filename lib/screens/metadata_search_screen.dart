@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import '../models/immich_asset.dart';
+import '../models/immich_person.dart';
 import '../services/immich_api_service.dart';
 import '../services/grid_scale_service.dart';
 import '../services/background_thumbnail_service.dart';
@@ -38,6 +39,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   bool _hasPerformedInitialSearch = false;
   bool _showStatusWidget = true; // Toggle for showing status widget
   final ValueNotifier<int> _selectedCountNotifier = ValueNotifier<int>(0);
+  String _currentDateOverlay = '';
 
   // Memory management constants
   static const int _maxAssetsBeforeView = 800;
@@ -86,7 +88,14 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
   String? _country;
   String? _make;
   String? _model;
+  Set<String> _personIds = {};
   String _sortOrder = 'desc';
+
+  // State for people/face search
+  List<ImmichPerson> _people = [];
+  List<ImmichPerson> _filteredPeople = [];
+  Set<String> _selectedPersonIds = {};
+  final TextEditingController _faceSearchController = TextEditingController();
 
   @override
   void initState() {
@@ -97,6 +106,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     // Perform initial search without filters when page loads
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _performInitialSearch();
+      _loadPeople();
     });
   }
 
@@ -108,6 +118,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     _clearAllItemKeys(); // Clear all GlobalKeys when disposing
     _selectedCountNotifier.dispose();
     _scrollStopTimer?.cancel(); // Cancel scroll stop timer
+    _faceSearchController.dispose();
 
     super.dispose();
   }
@@ -138,6 +149,9 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         }
 
         _estimatedVisibleStartIndex = newVisibleIndex;
+
+        // Update date overlay
+        _updateDateOverlay();
 
         // Reset scroll stop timer - user is still scrolling
         _resetScrollStopTimer();
@@ -203,6 +217,23 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       if (mounted) {
         setState(() {
           // Force a rebuild to show updated position in status
+        });
+      }
+    }
+  }
+
+  void _updateDateOverlay() {
+    if (_assets.isNotEmpty &&
+        _estimatedVisibleStartIndex >= 0 &&
+        _estimatedVisibleStartIndex < _assets.length) {
+      final asset = _assets[_estimatedVisibleStartIndex];
+      final monthKey =
+          '${asset.createdAt.year}-${asset.createdAt.month.toString().padLeft(2, '0')}';
+      final formattedDate = PhotoDateUtils.formatMonthHeader(monthKey);
+
+      if (formattedDate != _currentDateOverlay) {
+        setState(() {
+          _currentDateOverlay = formattedDate;
         });
       }
     }
@@ -365,7 +396,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     try {
       final searchResult = await widget.apiService.searchMetadata(
         page: 1,
-        size: 50,
+        size: _assetsPerPage,
         order: _sortOrder,
         isFavorite: _isFavorite,
         isOffline: _isOffline,
@@ -378,6 +409,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         country: _country,
         make: _make,
         model: _model,
+        personIds: _personIds.toList(),
       );
 
       print('🔍 Search result structure: ${searchResult.keys}');
@@ -402,7 +434,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         _assets = assets;
         _currentPage = 1;
         _totalAssetsLoaded = assets.length; // Track total assets loaded
-        _hasMoreData = assets.length == 50;
+        _hasMoreData = assets.length == _assetsPerPage;
         _isLoading = false;
 
         // Cleanup old GlobalKeys after setting new assets
@@ -465,6 +497,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             country: _country,
             make: _make,
             model: _model,
+            personIds: _personIds.toList(),
           ),
         );
       }
@@ -595,6 +628,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         country: _country,
         make: _make,
         model: _model,
+        personIds: _personIds.toList(),
       );
 
       List<dynamic> jsonList;
@@ -731,6 +765,8 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
       _make = null;
       _model = null;
       _sortOrder = 'desc';
+      _personIds.clear();
+      _selectedPersonIds.clear();
       _assets.clear();
       _itemKeys.clear(); // Clear GlobalKeys when clearing assets
     });
@@ -746,114 +782,269 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
           builder: (context, setDialogState) {
             return AlertDialog(
               title: const Text('Advanced Search Filters'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Sort Order
-                    Text('Sort Order',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    RadioListTile<String>(
-                      title: const Text('Newest first'),
-                      value: 'desc',
-                      groupValue: _sortOrder,
-                      onChanged: (value) =>
-                          setDialogState(() => _sortOrder = value!),
-                    ),
-                    RadioListTile<String>(
-                      title: const Text('Oldest first'),
-                      value: 'asc',
-                      groupValue: _sortOrder,
-                      onChanged: (value) =>
-                          setDialogState(() => _sortOrder = value!),
-                    ),
-                    const SizedBox(height: 16),
+              content: SizedBox(
+                width: MediaQuery.of(context).size.width,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Sort Order
+                      Text('Sort Order',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      RadioListTile<String>(
+                        title: const Text('Newest first'),
+                        value: 'desc',
+                        groupValue: _sortOrder,
+                        onChanged: (value) =>
+                            setDialogState(() => _sortOrder = value!),
+                      ),
+                      RadioListTile<String>(
+                        title: const Text('Oldest first'),
+                        value: 'asc',
+                        groupValue: _sortOrder,
+                        onChanged: (value) =>
+                            setDialogState(() => _sortOrder = value!),
+                      ),
+                      const SizedBox(height: 16),
 
-                    // Media Type
-                    Text('Media Type',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    RadioListTile<String?>(
-                      title: const Text('All'),
-                      value: null,
-                      groupValue: _type,
-                      onChanged: (value) => setDialogState(() => _type = value),
-                    ),
-                    RadioListTile<String>(
-                      title: const Text('Images'),
-                      value: 'IMAGE',
-                      groupValue: _type,
-                      onChanged: (value) => setDialogState(() => _type = value),
-                    ),
-                    RadioListTile<String>(
-                      title: const Text('Videos'),
-                      value: 'VIDEO',
-                      groupValue: _type,
-                      onChanged: (value) => setDialogState(() => _type = value),
-                    ),
-                    const SizedBox(height: 16),
+                      // Face/People Search
+                      if (_people.isNotEmpty) ...[
+                        Text('Filter by Person',
+                            style: Theme.of(context).textTheme.titleSmall),
+                        const SizedBox(height: 8),
+                        // Search box for faces
+                        TextFormField(
+                          controller: _faceSearchController,
+                          onChanged: (value) {
+                            setDialogState(() {
+                              _filteredPeople = _people
+                                  .where((person) => person.name
+                                      .toLowerCase()
+                                      .contains(value.toLowerCase()))
+                                  .toList();
+                            });
+                          },
+                          decoration: InputDecoration(
+                            hintText: 'Search for a person...',
+                            prefixIcon: const Icon(Icons.search),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            suffixIcon: _faceSearchController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear),
+                                    onPressed: () {
+                                      setDialogState(() {
+                                        _faceSearchController.clear();
+                                        _filteredPeople = _people;
+                                      });
+                                    },
+                                  )
+                                : null,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        // List of faces
+                        SizedBox(
+                          height: 300,
+                          child: GridView.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 6,
+                              crossAxisSpacing: 6,
+                              mainAxisSpacing: 6,
+                              childAspectRatio: 1.0,
+                            ),
+                            itemCount: _filteredPeople.length + 1,
+                            itemBuilder: (context, index) {
+                              // "Any Person" Tile
+                              if (index == 0) {
+                                final isSelected = _selectedPersonIds.isEmpty;
+                                return GestureDetector(
+                                  onTap: () => setDialogState(
+                                      () => _selectedPersonIds.clear()),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade200,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                            : Colors.transparent,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.people,
+                                            color: Colors.grey.shade700),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          'Any',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey.shade800,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }
 
-                    // Favorites
-                    Text('Favorites',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    RadioListTile<bool?>(
-                      title: const Text('All'),
-                      value: null,
-                      groupValue: _isFavorite,
-                      onChanged: (value) =>
-                          setDialogState(() => _isFavorite = value),
-                    ),
-                    RadioListTile<bool>(
-                      title: const Text('Favorites only'),
-                      value: true,
-                      groupValue: _isFavorite,
-                      onChanged: (value) =>
-                          setDialogState(() => _isFavorite = value),
-                    ),
-                    const SizedBox(height: 16),
+                              // Person Tile
+                              final person = _filteredPeople[index - 1];
+                              final isSelected =
+                                  _selectedPersonIds.contains(person.id);
+                              final thumbnailUrl = widget.apiService
+                                  .getPersonThumbnailUrl(person.id);
 
-                    // Advanced Options
-                    Text('Advanced Options',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    SwitchListTile(
-                      title: const Text('Include offline assets'),
-                      subtitle:
-                          const Text('Assets that are no longer available'),
-                      value: _isOffline == true,
-                      onChanged: (value) => setDialogState(
-                          () => _isOffline = value ? true : null),
-                    ),
-                    SwitchListTile(
-                      title: const Text('Include trashed assets'),
-                      subtitle: const Text('Assets in trash'),
-                      value: _isTrashed == true,
-                      onChanged: (value) => setDialogState(
-                          () => _isTrashed = value ? true : null),
-                    ),
-                    SwitchListTile(
-                      title: const Text('Include archived assets'),
-                      subtitle: const Text('Assets that are archived'),
-                      value: _isArchived == true,
-                      onChanged: (value) => setDialogState(
-                          () => _isArchived = value ? true : null),
-                    ),
-                    SwitchListTile(
-                      title: const Text('Include deleted'),
-                      subtitle: const Text(
-                          'Show deleted assets (requires server support)'),
-                      value: _withDeleted,
-                      onChanged: (value) =>
-                          setDialogState(() => _withDeleted = value),
-                    ),
-                    SwitchListTile(
-                      title: const Text('Include archived in search'),
-                      subtitle:
-                          const Text('Include archived assets in results'),
-                      value: _withArchived,
-                      onChanged: (value) =>
-                          setDialogState(() => _withArchived = value),
-                    ),
-                  ],
+                              return GestureDetector(
+                                onTap: () {
+                                  setDialogState(() {
+                                    if (isSelected) {
+                                      _selectedPersonIds.remove(person.id);
+                                    } else {
+                                      _selectedPersonIds.add(person.id);
+                                    }
+                                  });
+                                },
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8.0),
+                                  child: GridTile(
+                                    footer: GridTileBar(
+                                      backgroundColor: Colors.black45,
+                                      title: Text(
+                                        person.name,
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(fontSize: 10),
+                                      ),
+                                    ),
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? Theme.of(context)
+                                                  .colorScheme
+                                                  .primary
+                                              : Colors.transparent,
+                                          width: 3,
+                                        ),
+                                        borderRadius:
+                                            BorderRadius.circular(8.0),
+                                      ),
+                                      child: Image.network(
+                                        thumbnailUrl,
+                                        headers: widget.apiService.authHeaders,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, obj, trace) =>
+                                            const Icon(Icons.face),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      // Media Type
+                      Text('Media Type',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      RadioListTile<String?>(
+                        title: const Text('All'),
+                        value: null,
+                        groupValue: _type,
+                        onChanged: (value) =>
+                            setDialogState(() => _type = value),
+                      ),
+                      RadioListTile<String>(
+                        title: const Text('Images'),
+                        value: 'IMAGE',
+                        groupValue: _type,
+                        onChanged: (value) =>
+                            setDialogState(() => _type = value),
+                      ),
+                      RadioListTile<String>(
+                        title: const Text('Videos'),
+                        value: 'VIDEO',
+                        groupValue: _type,
+                        onChanged: (value) =>
+                            setDialogState(() => _type = value),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Favorites
+                      Text('Favorites',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      RadioListTile<bool?>(
+                        title: const Text('All'),
+                        value: null,
+                        groupValue: _isFavorite,
+                        onChanged: (value) =>
+                            setDialogState(() => _isFavorite = value),
+                      ),
+                      RadioListTile<bool>(
+                        title: const Text('Favorites only'),
+                        value: true,
+                        groupValue: _isFavorite,
+                        onChanged: (value) =>
+                            setDialogState(() => _isFavorite = value),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Advanced Options
+                      Text('Advanced Options',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      SwitchListTile(
+                        title: const Text('Include offline assets'),
+                        subtitle:
+                            const Text('Assets that are no longer available'),
+                        value: _isOffline == true,
+                        onChanged: (value) => setDialogState(
+                            () => _isOffline = value ? true : null),
+                      ),
+                      SwitchListTile(
+                        title: const Text('Include trashed assets'),
+                        subtitle: const Text('Assets in trash'),
+                        value: _isTrashed == true,
+                        onChanged: (value) => setDialogState(
+                            () => _isTrashed = value ? true : null),
+                      ),
+                      SwitchListTile(
+                        title: const Text('Include archived assets'),
+                        subtitle: const Text('Assets that are archived'),
+                        value: _isArchived == true,
+                        onChanged: (value) => setDialogState(
+                            () => _isArchived = value ? true : null),
+                      ),
+                      SwitchListTile(
+                        title: const Text('Include deleted'),
+                        subtitle: const Text(
+                            'Show deleted assets (requires server support)'),
+                        value: _withDeleted,
+                        onChanged: (value) =>
+                            setDialogState(() => _withDeleted = value),
+                      ),
+                      SwitchListTile(
+                        title: const Text('Include archived in search'),
+                        subtitle:
+                            const Text('Include archived assets in results'),
+                        value: _withArchived,
+                        onChanged: (value) =>
+                            setDialogState(() => _withArchived = value),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -870,7 +1061,10 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    setState(() {});
+                    setState(() {
+                      // Apply the selected person filter
+                      _personIds = Set.from(_selectedPersonIds);
+                    });
                     Navigator.of(context).pop();
                     _searchAssets();
                   },
@@ -947,7 +1141,33 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
             : _buildNormalActions(),
       ),
       extendBodyBehindAppBar: true,
-      body: _buildBody(),
+      body: Stack(
+        children: [
+          _buildBody(),
+          if (_assets.isNotEmpty && _currentDateOverlay.isNotEmpty)
+            Positioned(
+              top: 100, // Adjust as needed
+              right: 16,
+              child: IgnorePointer(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    _currentDateOverlay,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
       floatingActionButton: _isSelectionMode
           ? null
           : FloatingActionButton(
@@ -1491,6 +1711,7 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
         make: _make,
         model: _model,
         sortOrder: _sortOrder,
+        personIds: _personIds.toList(),
       );
 
       if (mounted) {
@@ -2302,6 +2523,23 @@ class _MetadataSearchScreenState extends State<MetadataSearchScreen> {
     return _selectedAssetIds.contains(assetId) ||
         _originalSelectedAssetIds.contains(assetId) ||
         _dragSelectedAssetIds.contains(assetId);
+  }
+
+  Future<void> _loadPeople() async {
+    if (!widget.apiService.isConfigured) return;
+
+    try {
+      final people = await widget.apiService.getAllPeople();
+      if (mounted) {
+        setState(() {
+          _people = people;
+          _filteredPeople = people;
+        });
+      }
+    } catch (e) {
+      print('Error loading people: $e');
+      // Handle error appropriately, maybe show a snackbar
+    }
   }
 }
 
